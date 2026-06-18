@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+data/
+coverage/
+*.log
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+Thumbs.db
+
+# Local AIDLC workspace files
+OPERATIONS.md
+versions/
+design/
+scratch/

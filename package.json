@@ -1,0 +1,21 @@
+{
+  "name": "mintgallery",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A private, local-first family gallery.",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n web,server -c green,cyan \"npm run dev -w @mintgallery/web\" \"npm run dev -w @mintgallery/server\"",
+    "build": "npm run build -w @mintgallery/server && npm run build -w @mintgallery/web",
+    "test": "npm run test -w @mintgallery/server && npm run test -w @mintgallery/web",
+    "typecheck": "npm run typecheck -w @mintgallery/server && npm run typecheck -w @mintgallery/web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

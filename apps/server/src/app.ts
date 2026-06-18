@@ -1,0 +1,591 @@
+import { randomUUID } from 'node:crypto'
+import { existsSync, statSync } from 'node:fs'
+import path from 'node:path'
+import cookie from '@fastify/cookie'
+import multipart from '@fastify/multipart'
+import staticFiles from '@fastify/static'
+import Fastify, {
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from 'fastify'
+import type { DatabaseSync } from 'node:sqlite'
+import {
+  SESSION_COOKIE,
+  SESSION_DURATION_MS,
+  createSessionToken,
+  hashPassword,
+  hashSessionToken,
+  publicUser,
+  verifyPassword,
+  type SessionUser,
+} from './auth.js'
+import { loadConfig, type AppConfig } from './config.js'
+import { openDatabase } from './db.js'
+import {
+  createImageDerivatives,
+  createReadStream,
+  discardTemporaryUpload,
+  ensureStorageDirectories,
+  fileSize,
+  moveOriginal,
+  receiveUpload,
+  resolveStoragePath,
+  storageStats,
+  toRelativeStoragePath,
+} from './storage.js'
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    currentUser: SessionUser | null
+  }
+}
+
+interface CreateAppOptions {
+  config?: Partial<AppConfig>
+  logger?: boolean
+}
+
+interface UserRow {
+  id: string
+  username: string
+  password_hash: string
+  role: string
+  status: string
+  must_change_password: number
+  created_at: number
+}
+
+interface AssetRow {
+  id: string
+  owner_id: string
+  owner_name: string
+  type: 'IMAGE' | 'VIDEO' | 'LIVE_PHOTO'
+  visibility: 'SHARED' | 'PRIVATE'
+  status: 'PROCESSING' | 'READY' | 'FAILED'
+  original_name: string
+  mime_type: string
+  size_bytes: number
+  width: number | null
+  height: number | null
+  duration_ms: number | null
+  uploaded_at: number
+  processing_error: string | null
+  original_file_id: string
+  thumbnail_file_id: string | null
+  preview_file_id: string | null
+}
+
+interface MediaRow {
+  id: string
+  kind: string
+  relative_path: string
+  mime_type: string
+  size_bytes: number
+  asset_id: string
+  owner_id: string
+  visibility: 'SHARED' | 'PRIVATE'
+  original_name: string
+}
+
+function cleanUsername(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function validUsername(username: string): boolean {
+  return /^[\p{L}\p{N}_-]{2,32}$/u.test(username)
+}
+
+function validPassword(password: unknown): password is string {
+  return typeof password === 'string' && password.length >= 8 && password.length <= 128
+}
+
+function sessionUser(database: DatabaseSync, token: string | undefined): SessionUser | null {
+  if (!token) return null
+
+  const row = database
+    .prepare(`
+      SELECT u.id, u.username, u.role, u.status, u.must_change_password
+      FROM sessions s
+      JOIN users u ON u.id = s.user_id
+      WHERE s.token_hash = ? AND s.expires_at > ? AND u.status = 'ACTIVE'
+    `)
+    .get(hashSessionToken(token), Date.now()) as UserRow | undefined
+
+  return row ? publicUser(row) : null
+}
+
+function setSessionCookie(reply: FastifyReply, token: string, config: AppConfig): void {
+  reply.setCookie(SESSION_COOKIE, token, {
+    path: '/',
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: config.cookieSecure,
+    maxAge: SESSION_DURATION_MS / 1000,
+  })
+}
+
+function serializeAsset(row: AssetRow) {
+  const mediaUrl = (id: string | null) => (id ? `/api/media/${id}` : null)
+  return {
+    id: row.id,
+    ownerId: row.owner_id,
+    ownerName: row.owner_name,
+    type: row.type,
+    visibility: row.visibility,
+    status: row.status,
+    originalName: row.original_name,
+    mimeType: row.mime_type,
+    sizeBytes: row.size_bytes,
+    width: row.width,
+    height: row.height,
+    durationMs: row.duration_ms,
+    uploadedAt: new Date(row.uploaded_at).toISOString(),
+    processingError: row.processing_error,
+    originalUrl: mediaUrl(row.original_file_id),
+    thumbnailUrl: mediaUrl(row.thumbnail_file_id),
+    previewUrl: mediaUrl(row.preview_file_id),
+    backupStatus: 'NOT_CONFIGURED' as const,
+  }
+}
+
+export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
+  const config = loadConfig(options.config)
+  ensureStorageDirectories(config)
+  const database = openDatabase(config.databasePath)
+  const app = Fastify({
+    logger: options.logger ?? true,
+    bodyLimit: 2 * 1024 * 1024 * 1024,
+  })
+
+  await app.register(cookie)
+  await app.register(multipart, {
+    limits: {
+      files: 1,
+      fileSize: 2 * 1024 * 1024 * 1024,
+      fields: 5,
+    },
+  })
+
+  app.decorateRequest('currentUser', null)
+
+  const requireUser = async (request: FastifyRequest, reply: FastifyReply) => {
+    request.currentUser = sessionUser(database, request.cookies[SESSION_COOKIE])
+    if (!request.currentUser) {
+      return reply.code(401).send({ message: '请先登录' })
+    }
+  }
+
+  const requireAdmin = async (request: FastifyRequest, reply: FastifyReply) => {
+    await requireUser(request, reply)
+    if (reply.sent) return
+    if (request.currentUser?.role !== 'ADMIN') {
+      return reply.code(403).send({ message: '仅管理员可以执行此操作' })
+    }
+  }
+
+  app.get('/api/health', async () => ({ ok: true, version: '0.1.0' }))
+
+  app.get('/api/bootstrap/status', async () => {
+    const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }
+    return { needsSetup: row.count === 0 }
+  })
+
+  app.post('/api/bootstrap', async (request, reply) => {
+    const existing = database.prepare('SELECT COUNT(*) AS count FROM users').get() as {
+      count: number
+    }
+    if (existing.count > 0) {
+      return reply.code(409).send({ message: '初始化已经完成' })
+    }
+
+    const body = request.body as { username?: unknown; password?: unknown }
+    const username = cleanUsername(body?.username)
+    if (!validUsername(username)) {
+      return reply.code(400).send({ message: '用户名需为 2 到 32 个汉字、字母、数字、下划线或短横线' })
+    }
+    if (!validPassword(body?.password)) {
+      return reply.code(400).send({ message: '密码长度需为 8 到 128 个字符' })
+    }
+
+    const userId = randomUUID()
+    const passwordHash = await hashPassword(body.password)
+    database
+      .prepare(`
+        INSERT INTO users (
+          id, username, password_hash, role, status, must_change_password, created_at
+        ) VALUES (?, ?, ?, 'ADMIN', 'ACTIVE', 0, ?)
+      `)
+      .run(userId, username, passwordHash, Date.now())
+
+    const token = createSessionToken()
+    database
+      .prepare('INSERT INTO sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)')
+      .run(hashSessionToken(token), userId, Date.now() + SESSION_DURATION_MS, Date.now())
+    setSessionCookie(reply, token, config)
+
+    return reply.code(201).send({
+      user: { id: userId, username, role: 'ADMIN', status: 'ACTIVE', mustChangePassword: false },
+    })
+  })
+
+  app.post('/api/auth/login', async (request, reply) => {
+    const body = request.body as { username?: unknown; password?: unknown }
+    const username = cleanUsername(body?.username)
+    const password = body?.password
+    const row = database
+      .prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE')
+      .get(username) as UserRow | undefined
+
+    if (!row || row.status !== 'ACTIVE' || typeof password !== 'string') {
+      return reply.code(401).send({ message: '账号或密码不正确' })
+    }
+    if (!(await verifyPassword(password, row.password_hash))) {
+      return reply.code(401).send({ message: '账号或密码不正确' })
+    }
+
+    database.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Date.now())
+    const token = createSessionToken()
+    database
+      .prepare('INSERT INTO sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)')
+      .run(hashSessionToken(token), row.id, Date.now() + SESSION_DURATION_MS, Date.now())
+    setSessionCookie(reply, token, config)
+    return { user: publicUser(row) }
+  })
+
+  app.get('/api/auth/me', { preHandler: requireUser }, async (request) => ({
+    user: request.currentUser,
+  }))
+
+  app.post('/api/auth/logout', { preHandler: requireUser }, async (request, reply) => {
+    const token = request.cookies[SESSION_COOKIE]
+    if (token) database.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashSessionToken(token))
+    reply.clearCookie(SESSION_COOKIE, { path: '/' })
+    return reply.code(204).send()
+  })
+
+  app.post('/api/auth/change-password', { preHandler: requireUser }, async (request, reply) => {
+    const body = request.body as { currentPassword?: unknown; newPassword?: unknown }
+    if (typeof body?.currentPassword !== 'string' || !validPassword(body?.newPassword)) {
+      return reply.code(400).send({ message: '请提供当前密码，新密码至少需要 8 个字符' })
+    }
+
+    const row = database
+      .prepare('SELECT * FROM users WHERE id = ?')
+      .get(request.currentUser!.id) as unknown as UserRow
+    if (!(await verifyPassword(body.currentPassword, row.password_hash))) {
+      return reply.code(400).send({ message: '当前密码不正确' })
+    }
+
+    database
+      .prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?')
+      .run(await hashPassword(body.newPassword), row.id)
+    return { ok: true }
+  })
+
+  app.get('/api/users', { preHandler: requireAdmin }, async () => {
+    const rows = database
+      .prepare(`
+        SELECT id, username, role, status, must_change_password, created_at
+        FROM users ORDER BY created_at ASC
+      `)
+      .all() as unknown as UserRow[]
+
+    return {
+      users: rows.map((row) => ({
+        ...publicUser(row),
+        createdAt: new Date(row.created_at).toISOString(),
+      })),
+    }
+  })
+
+  app.post('/api/users', { preHandler: requireAdmin }, async (request, reply) => {
+    const body = request.body as { username?: unknown; temporaryPassword?: unknown }
+    const username = cleanUsername(body?.username)
+    if (!validUsername(username) || !validPassword(body?.temporaryPassword)) {
+      return reply.code(400).send({ message: '请提供有效用户名和至少 8 个字符的临时密码' })
+    }
+
+    try {
+      const id = randomUUID()
+      database
+        .prepare(`
+          INSERT INTO users (
+            id, username, password_hash, role, status, must_change_password, created_at
+          ) VALUES (?, ?, ?, 'MEMBER', 'ACTIVE', 1, ?)
+        `)
+        .run(id, username, await hashPassword(body.temporaryPassword), Date.now())
+      return reply.code(201).send({ id, username })
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('UNIQUE')) {
+        return reply.code(409).send({ message: '该用户名已经存在' })
+      }
+      throw error
+    }
+  })
+
+  app.patch('/api/users/:id/status', { preHandler: requireAdmin }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = request.body as { status?: unknown }
+    if (body?.status !== 'ACTIVE' && body?.status !== 'DISABLED') {
+      return reply.code(400).send({ message: '账号状态无效' })
+    }
+    if (id === request.currentUser!.id && body.status === 'DISABLED') {
+      return reply.code(400).send({ message: '不能停用当前管理员账号' })
+    }
+
+    const result = database.prepare('UPDATE users SET status = ? WHERE id = ?').run(body.status, id)
+    if (result.changes === 0) return reply.code(404).send({ message: '用户不存在' })
+    if (body.status === 'DISABLED') {
+      database.prepare('DELETE FROM sessions WHERE user_id = ?').run(id)
+    }
+    return { ok: true }
+  })
+
+  app.get('/api/admin/stats', { preHandler: requireAdmin }, async () => {
+    const disk = storageStats(config)
+    const assets = database
+      .prepare('SELECT COUNT(*) AS count, COALESCE(SUM(size_bytes), 0) AS bytes FROM assets')
+      .get() as { count: number; bytes: number }
+    return { disk, assets: { count: assets.count, originalBytes: assets.bytes } }
+  })
+
+  app.post('/api/assets', { preHandler: requireUser }, async (request, reply) => {
+    const { visibility = 'SHARED' } = request.query as { visibility?: string }
+    if (visibility !== 'SHARED' && visibility !== 'PRIVATE') {
+      return reply.code(400).send({ message: '可见范围无效' })
+    }
+    if (storageStats(config).freeBytes < 512 * 1024 * 1024) {
+      return reply.code(507).send({ message: '磁盘剩余空间不足，已停止接收新文件' })
+    }
+
+    const part = await request.file()
+    if (!part) return reply.code(400).send({ message: '请选择一个文件' })
+
+    const upload = await receiveUpload(part.file, config)
+    if (part.file.truncated) {
+      discardTemporaryUpload(upload)
+      return reply.code(413).send({ message: '文件超过 2 GB 限制' })
+    }
+
+    const assetId = randomUUID()
+    const originalPath = moveOriginal(upload, request.currentUser!.id, assetId, config)
+    const originalFileId = randomUUID()
+    const originalName = path.basename(part.filename).replace(/[\u0000-\u001f]/g, '').slice(0, 255) || '未命名文件'
+    const originalKind = upload.assetType === 'IMAGE' ? 'ORIGINAL_IMAGE' : 'ORIGINAL_VIDEO'
+    const uploadedAt = Date.now()
+
+    database.exec('BEGIN')
+    try {
+      database
+        .prepare(`
+          INSERT INTO assets (
+            id, owner_id, type, visibility, status, original_name, mime_type,
+            size_bytes, sha256, uploaded_at
+          ) VALUES (?, ?, ?, ?, 'PROCESSING', ?, ?, ?, ?, ?)
+        `)
+        .run(
+          assetId,
+          request.currentUser!.id,
+          upload.assetType,
+          visibility,
+          originalName,
+          upload.mimeType,
+          upload.sizeBytes,
+          upload.sha256,
+          uploadedAt,
+        )
+      database
+        .prepare(`
+          INSERT INTO asset_files (id, asset_id, kind, relative_path, mime_type, size_bytes)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          originalFileId,
+          assetId,
+          originalKind,
+          toRelativeStoragePath(config, originalPath),
+          upload.mimeType,
+          upload.sizeBytes,
+        )
+      database.exec('COMMIT')
+    } catch (error) {
+      database.exec('ROLLBACK')
+      throw error
+    }
+
+    try {
+      if (upload.assetType === 'IMAGE') {
+        const derivatives = await createImageDerivatives(originalPath, assetId, config)
+        const insertFile = database.prepare(`
+          INSERT INTO asset_files (id, asset_id, kind, relative_path, mime_type, size_bytes)
+          VALUES (?, ?, ?, ?, 'image/webp', ?)
+        `)
+        insertFile.run(
+          randomUUID(),
+          assetId,
+          'THUMBNAIL',
+          toRelativeStoragePath(config, derivatives.thumbnailPath),
+          fileSize(derivatives.thumbnailPath),
+        )
+        insertFile.run(
+          randomUUID(),
+          assetId,
+          'PREVIEW',
+          toRelativeStoragePath(config, derivatives.previewPath),
+          fileSize(derivatives.previewPath),
+        )
+        database
+          .prepare("UPDATE assets SET status = 'READY', width = ?, height = ? WHERE id = ?")
+          .run(derivatives.width, derivatives.height, assetId)
+      } else {
+        database.prepare("UPDATE assets SET status = 'READY' WHERE id = ?").run(assetId)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 500) : '媒体处理失败'
+      database
+        .prepare("UPDATE assets SET status = 'FAILED', processing_error = ? WHERE id = ?")
+        .run(message, assetId)
+    }
+
+    const created = database
+      .prepare(`
+        SELECT a.*, u.username AS owner_name,
+          (SELECT id FROM asset_files WHERE asset_id = a.id AND kind LIKE 'ORIGINAL_%' LIMIT 1) AS original_file_id,
+          (SELECT id FROM asset_files WHERE asset_id = a.id AND kind = 'THUMBNAIL' LIMIT 1) AS thumbnail_file_id,
+          (SELECT id FROM asset_files WHERE asset_id = a.id AND kind = 'PREVIEW' LIMIT 1) AS preview_file_id
+        FROM assets a JOIN users u ON u.id = a.owner_id WHERE a.id = ?
+      `)
+      .get(assetId) as unknown as AssetRow
+
+    return reply.code(201).send({ asset: serializeAsset(created) })
+  })
+
+  app.get('/api/assets', { preHandler: requireUser }, async (request, reply) => {
+    const query = request.query as { scope?: string; cursor?: string; limit?: string }
+    const scope = query.scope ?? 'SHARED'
+    if (scope !== 'SHARED' && scope !== 'PRIVATE') {
+      return reply.code(400).send({ message: '相册范围无效' })
+    }
+
+    const requestedLimit = Number(query.limit ?? 30)
+    const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 60) : 30
+    let cursor: [number, string] | null = null
+    if (query.cursor) {
+      try {
+        const value = JSON.parse(Buffer.from(query.cursor, 'base64url').toString('utf8'))
+        if (Array.isArray(value) && typeof value[0] === 'number' && typeof value[1] === 'string') {
+          cursor = [value[0], value[1]]
+        }
+      } catch {
+        return reply.code(400).send({ message: '分页游标无效' })
+      }
+    }
+
+    const conditions = scope === 'SHARED'
+      ? ["a.visibility = 'SHARED'"]
+      : ["a.visibility = 'PRIVATE'", 'a.owner_id = ?']
+    const parameters: Array<string | number> = scope === 'PRIVATE' ? [request.currentUser!.id] : []
+    if (cursor) {
+      conditions.push('(a.uploaded_at < ? OR (a.uploaded_at = ? AND a.id < ?))')
+      parameters.push(cursor[0], cursor[0], cursor[1])
+    }
+    parameters.push(limit + 1)
+
+    const rows = database
+      .prepare(`
+        SELECT a.*, u.username AS owner_name,
+          (SELECT id FROM asset_files WHERE asset_id = a.id AND kind LIKE 'ORIGINAL_%' LIMIT 1) AS original_file_id,
+          (SELECT id FROM asset_files WHERE asset_id = a.id AND kind = 'THUMBNAIL' LIMIT 1) AS thumbnail_file_id,
+          (SELECT id FROM asset_files WHERE asset_id = a.id AND kind = 'PREVIEW' LIMIT 1) AS preview_file_id
+        FROM assets a
+        JOIN users u ON u.id = a.owner_id
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY a.uploaded_at DESC, a.id DESC
+        LIMIT ?
+      `)
+      .all(...parameters) as unknown as AssetRow[]
+
+    const hasMore = rows.length > limit
+    const page = rows.slice(0, limit)
+    const last = page.at(-1)
+    const nextCursor = hasMore && last
+      ? Buffer.from(JSON.stringify([last.uploaded_at, last.id])).toString('base64url')
+      : null
+
+    return { assets: page.map(serializeAsset), nextCursor }
+  })
+
+  app.get('/api/media/:id', { preHandler: requireUser }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const row = database
+      .prepare(`
+        SELECT f.*, a.owner_id, a.visibility, a.original_name
+        FROM asset_files f JOIN assets a ON a.id = f.asset_id
+        WHERE f.id = ?
+      `)
+      .get(id) as MediaRow | undefined
+
+    if (!row) return reply.code(404).send({ message: '文件不存在' })
+    const canRead =
+      request.currentUser!.role === 'ADMIN' ||
+      row.visibility === 'SHARED' ||
+      row.owner_id === request.currentUser!.id
+    if (!canRead) return reply.code(403).send({ message: '无权查看此文件' })
+
+    const filePath = resolveStoragePath(config, row.relative_path)
+    if (!existsSync(filePath)) return reply.code(404).send({ message: '磁盘文件不存在' })
+
+    const size = statSync(filePath).size
+    const range = request.headers.range
+    reply.header('Cache-Control', 'private, max-age=86400')
+    reply.header('Accept-Ranges', 'bytes')
+    reply.type(row.mime_type)
+
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range)
+      if (!match) return reply.code(416).send()
+      const suffixLength = !match[1] && match[2] ? Number(match[2]) : null
+      const start = suffixLength === null
+        ? Number(match[1] ?? 0)
+        : Math.max(size - suffixLength, 0)
+      const end = suffixLength === null && match[2]
+        ? Math.min(Number(match[2]), size - 1)
+        : size - 1
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start || start >= size) {
+        return reply.code(416).header('Content-Range', `bytes */${size}`).send()
+      }
+      reply.code(206)
+      reply.header('Content-Range', `bytes ${start}-${end}/${size}`)
+      reply.header('Content-Length', end - start + 1)
+      return reply.send(createReadStream(filePath, { start, end }))
+    }
+
+    reply.header('Content-Length', size)
+    return reply.send(createReadStream(filePath))
+  })
+
+  if (existsSync(path.join(config.webDistDirectory, 'index.html'))) {
+    await app.register(staticFiles, { root: config.webDistDirectory, prefix: '/' })
+    app.setNotFoundHandler((request, reply) => {
+      if (request.url.startsWith('/api/')) {
+        return reply.code(404).send({ message: '接口不存在' })
+      }
+      return reply.sendFile('index.html')
+    })
+  }
+
+  app.setErrorHandler((error, request, reply) => {
+    request.log.error(error)
+    const typedError = error as Error & { statusCode?: number }
+    const statusCode = typedError.statusCode && typedError.statusCode >= 400 ? typedError.statusCode : 500
+    const message = statusCode >= 500 ? '服务器处理请求时出现错误' : typedError.message
+    reply.code(statusCode).send({ message })
+  })
+
+  app.addHook('onClose', async () => {
+    database.close()
+  })
+
+  return app
+}

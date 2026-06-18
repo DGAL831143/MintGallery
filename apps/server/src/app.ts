@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import cookie from '@fastify/cookie'
@@ -33,6 +33,7 @@ import {
   resolveStoragePath,
   storageStats,
   toRelativeStoragePath,
+  type SavedUpload,
 } from './storage.js'
 
 declare module 'fastify' {
@@ -72,6 +73,7 @@ interface AssetRow {
   uploaded_at: number
   processing_error: string | null
   original_file_id: string
+  live_video_file_id: string | null
   thumbnail_file_id: string | null
   preview_file_id: string | null
 }
@@ -99,6 +101,28 @@ function validUsername(username: string): boolean {
 function validPassword(password: unknown): password is string {
   return typeof password === 'string' && password.length >= 8 && password.length <= 128
 }
+
+function cleanOriginalName(filename: string): string {
+  return path.basename(filename).replace(/[\u0000-\u001f]/g, '').slice(0, 255) || '未命名文件'
+}
+
+function fileBaseName(filename: string): string {
+  return path.parse(filename).name.normalize('NFC').toLocaleLowerCase()
+}
+
+const assetFileColumns = `
+  (SELECT id FROM asset_files
+    WHERE asset_id = a.id
+      AND kind = CASE WHEN a.type = 'VIDEO' THEN 'ORIGINAL_VIDEO' ELSE 'ORIGINAL_IMAGE' END
+    LIMIT 1) AS original_file_id,
+  (SELECT id FROM asset_files
+    WHERE asset_id = a.id AND kind = 'ORIGINAL_VIDEO' AND a.type = 'LIVE_PHOTO'
+    LIMIT 1) AS live_video_file_id,
+  (SELECT id FROM asset_files
+    WHERE asset_id = a.id AND kind = 'THUMBNAIL' LIMIT 1) AS thumbnail_file_id,
+  (SELECT id FROM asset_files
+    WHERE asset_id = a.id AND kind = 'PREVIEW' LIMIT 1) AS preview_file_id
+`
 
 function sessionUser(database: DatabaseSync, token: string | undefined): SessionUser | null {
   if (!token) return null
@@ -143,6 +167,7 @@ function serializeAsset(row: AssetRow) {
     uploadedAt: new Date(row.uploaded_at).toISOString(),
     processingError: row.processing_error,
     originalUrl: mediaUrl(row.original_file_id),
+    liveVideoUrl: mediaUrl(row.live_video_file_id),
     thumbnailUrl: mediaUrl(row.thumbnail_file_id),
     previewUrl: mediaUrl(row.preview_file_id),
     backupStatus: 'NOT_CONFIGURED' as const,
@@ -161,7 +186,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   await app.register(cookie)
   await app.register(multipart, {
     limits: {
-      files: 1,
+      files: 2,
       fileSize: 2 * 1024 * 1024 * 1024,
       fields: 5,
     },
@@ -184,7 +209,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.1.0' }))
+  app.get('/api/health', async () => ({ ok: true, version: '0.2.0' }))
 
   app.get('/api/bootstrap/status', async () => {
     const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }
@@ -371,7 +396,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const assetId = randomUUID()
     const originalPath = moveOriginal(upload, request.currentUser!.id, assetId, config)
     const originalFileId = randomUUID()
-    const originalName = path.basename(part.filename).replace(/[\u0000-\u001f]/g, '').slice(0, 255) || '未命名文件'
+    const originalName = cleanOriginalName(part.filename)
     const originalKind = upload.assetType === 'IMAGE' ? 'ORIGINAL_IMAGE' : 'ORIGINAL_VIDEO'
     const uploadedAt = Date.now()
 
@@ -451,9 +476,132 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const created = database
       .prepare(`
         SELECT a.*, u.username AS owner_name,
-          (SELECT id FROM asset_files WHERE asset_id = a.id AND kind LIKE 'ORIGINAL_%' LIMIT 1) AS original_file_id,
-          (SELECT id FROM asset_files WHERE asset_id = a.id AND kind = 'THUMBNAIL' LIMIT 1) AS thumbnail_file_id,
-          (SELECT id FROM asset_files WHERE asset_id = a.id AND kind = 'PREVIEW' LIMIT 1) AS preview_file_id
+          ${assetFileColumns}
+        FROM assets a JOIN users u ON u.id = a.owner_id WHERE a.id = ?
+      `)
+      .get(assetId) as unknown as AssetRow
+
+    return reply.code(201).send({ asset: serializeAsset(created) })
+  })
+
+  app.post('/api/assets/live-photo', { preHandler: requireUser }, async (request, reply) => {
+    const { visibility = 'SHARED' } = request.query as { visibility?: string }
+    if (visibility !== 'SHARED' && visibility !== 'PRIVATE') {
+      return reply.code(400).send({ message: '可见范围无效' })
+    }
+    if (storageStats(config).freeBytes < 512 * 1024 * 1024) {
+      return reply.code(507).send({ message: '磁盘剩余空间不足，已停止接收新文件' })
+    }
+
+    const received: Array<{ upload: SavedUpload; originalName: string }> = []
+    try {
+      for await (const part of request.files()) {
+        const upload = await receiveUpload(part.file, config)
+        if (part.file.truncated) {
+          discardTemporaryUpload(upload)
+          const fileTooLargeError = new Error('文件超过 2 GB 限制') as Error & { statusCode: number }
+          fileTooLargeError.statusCode = 413
+          throw fileTooLargeError
+        }
+        received.push({ upload, originalName: cleanOriginalName(part.filename) })
+      }
+    } catch (error) {
+      for (const item of received) discardTemporaryUpload(item.upload)
+      throw error
+    }
+
+    const stillMimeTypes = new Set(['image/jpeg', 'image/heic', 'image/heif'])
+    const photo = received.find((item) => stillMimeTypes.has(item.upload.mimeType))
+    const video = received.find((item) => item.upload.mimeType === 'video/quicktime')
+    const validPair = received.length === 2 && photo && video && photo !== video
+
+    if (!validPair) {
+      for (const item of received) discardTemporaryUpload(item.upload)
+      return reply.code(400).send({
+        message: '实况照片必须包含一张 HEIC/HEIF/JPEG 图片和一个 MOV 视频',
+      })
+    }
+    if (fileBaseName(photo.originalName) !== fileBaseName(video.originalName)) {
+      for (const item of received) discardTemporaryUpload(item.upload)
+      return reply.code(400).send({
+        message: '图片和 MOV 的主文件名需要相同，例如 IMG_1234.HEIC + IMG_1234.MOV',
+      })
+    }
+
+    const assetId = randomUUID()
+    const photoPath = moveOriginal(photo.upload, request.currentUser!.id, assetId, config)
+    const videoPath = moveOriginal(video.upload, request.currentUser!.id, assetId, config)
+    const uploadedAt = Date.now()
+    const combinedHash = createHash('sha256')
+      .update(photo.upload.sha256)
+      .update(video.upload.sha256)
+      .digest('hex')
+
+    database.exec('BEGIN')
+    try {
+      database
+        .prepare(`
+          INSERT INTO assets (
+            id, owner_id, type, visibility, status, original_name, mime_type,
+            size_bytes, sha256, uploaded_at
+          ) VALUES (?, ?, 'LIVE_PHOTO', ?, 'PROCESSING', ?, ?, ?, ?, ?)
+        `)
+        .run(
+          assetId,
+          request.currentUser!.id,
+          visibility,
+          photo.originalName,
+          photo.upload.mimeType,
+          photo.upload.sizeBytes + video.upload.sizeBytes,
+          combinedHash,
+          uploadedAt,
+        )
+      const insertFile = database.prepare(`
+        INSERT INTO asset_files (id, asset_id, kind, relative_path, mime_type, size_bytes)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `)
+      insertFile.run(
+        randomUUID(), assetId, 'ORIGINAL_IMAGE',
+        toRelativeStoragePath(config, photoPath), photo.upload.mimeType, photo.upload.sizeBytes,
+      )
+      insertFile.run(
+        randomUUID(), assetId, 'ORIGINAL_VIDEO',
+        toRelativeStoragePath(config, videoPath), video.upload.mimeType, video.upload.sizeBytes,
+      )
+      database.exec('COMMIT')
+    } catch (error) {
+      database.exec('ROLLBACK')
+      throw error
+    }
+
+    try {
+      const derivatives = await createImageDerivatives(photoPath, assetId, config)
+      const insertFile = database.prepare(`
+        INSERT INTO asset_files (id, asset_id, kind, relative_path, mime_type, size_bytes)
+        VALUES (?, ?, ?, ?, 'image/webp', ?)
+      `)
+      insertFile.run(
+        randomUUID(), assetId, 'THUMBNAIL',
+        toRelativeStoragePath(config, derivatives.thumbnailPath), fileSize(derivatives.thumbnailPath),
+      )
+      insertFile.run(
+        randomUUID(), assetId, 'PREVIEW',
+        toRelativeStoragePath(config, derivatives.previewPath), fileSize(derivatives.previewPath),
+      )
+      database
+        .prepare("UPDATE assets SET status = 'READY', width = ?, height = ? WHERE id = ?")
+        .run(derivatives.width, derivatives.height, assetId)
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 500) : '实况照片预览处理失败'
+      database
+        .prepare("UPDATE assets SET status = 'FAILED', processing_error = ? WHERE id = ?")
+        .run(message, assetId)
+    }
+
+    const created = database
+      .prepare(`
+        SELECT a.*, u.username AS owner_name,
+          ${assetFileColumns}
         FROM assets a JOIN users u ON u.id = a.owner_id WHERE a.id = ?
       `)
       .get(assetId) as unknown as AssetRow
@@ -495,9 +643,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const rows = database
       .prepare(`
         SELECT a.*, u.username AS owner_name,
-          (SELECT id FROM asset_files WHERE asset_id = a.id AND kind LIKE 'ORIGINAL_%' LIMIT 1) AS original_file_id,
-          (SELECT id FROM asset_files WHERE asset_id = a.id AND kind = 'THUMBNAIL' LIMIT 1) AS thumbnail_file_id,
-          (SELECT id FROM asset_files WHERE asset_id = a.id AND kind = 'PREVIEW' LIMIT 1) AS preview_file_id
+          ${assetFileColumns}
         FROM assets a
         JOIN users u ON u.id = a.owner_id
         WHERE ${conditions.join(' AND ')}

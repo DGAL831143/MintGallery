@@ -9,6 +9,7 @@ import {
   LogOut,
   Settings,
   ShieldAlert,
+  Sparkles,
   UserRound,
 } from 'lucide-vue-next'
 import { authApi, galleryApi } from '../api'
@@ -136,6 +137,7 @@ onMounted(() => void load(true))
             <CircleAlert v-else :size="28" />
           </div>
           <span v-if="asset.type === 'VIDEO'" class="media-badge"><Film :size="14" />视频</span>
+          <span v-else-if="asset.type === 'LIVE_PHOTO'" class="media-badge live-badge"><Sparkles :size="14" />LIVE</span>
           <span v-if="asset.status === 'FAILED'" class="media-error">预览失败</span>
           <span class="media-owner">{{ asset.ownerName }}</span>
         </button>

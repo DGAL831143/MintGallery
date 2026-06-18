@@ -23,6 +23,7 @@ export interface Asset {
   uploadedAt: string
   processingError: string | null
   originalUrl: string
+  liveVideoUrl: string | null
   thumbnailUrl: string | null
   previewUrl: string | null
   backupStatus: 'NOT_CONFIGURED'

@@ -80,18 +80,43 @@ export function uploadAsset(
   visibility: 'SHARED' | 'PRIVATE',
   onProgress: (percent: number) => void,
 ): Promise<Asset> {
+  const form = new FormData()
+  form.append('file', file, file.name)
+  return uploadForm(`/api/assets?visibility=${visibility}`, form, onProgress)
+}
+
+export function uploadLivePhoto(
+  photo: File,
+  video: File,
+  visibility: 'SHARED' | 'PRIVATE',
+  onProgress: (percent: number) => void,
+): Promise<Asset> {
+  const form = new FormData()
+  form.append('photo', photo, photo.name)
+  form.append('video', video, video.name)
+  return uploadForm(`/api/assets/live-photo?visibility=${visibility}`, form, onProgress)
+}
+
+function uploadForm(
+  url: string,
+  form: FormData,
+  onProgress: (percent: number) => void,
+): Promise<Asset> {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest()
-    const form = new FormData()
-    form.append('file', file, file.name)
 
-    request.open('POST', `/api/assets?visibility=${visibility}`)
+    request.open('POST', url)
     request.withCredentials = true
     request.upload.addEventListener('progress', (event) => {
       if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100))
     })
     request.addEventListener('load', () => {
-      const body = JSON.parse(request.responseText || '{}') as { asset?: Asset; message?: string }
+      let body: { asset?: Asset; message?: string } = {}
+      try {
+        body = JSON.parse(request.responseText || '{}') as typeof body
+      } catch {
+        body = { message: '服务器返回了无法识别的结果' }
+      }
       if (request.status >= 200 && request.status < 300 && body.asset) {
         resolve(body.asset)
       } else {

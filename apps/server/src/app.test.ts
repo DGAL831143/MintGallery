@@ -123,6 +123,105 @@ describe('MintGallery API', () => {
     expect(thumbnail.rawPayload.length).toBeGreaterThan(0)
   })
 
+  it('stores and serves a confirmed JPEG and MOV pair as one Live Photo', async () => {
+    const bootstrap = await app.inject({
+      method: 'POST',
+      url: '/api/bootstrap',
+      payload: { username: 'owner', password: 'strong-password' },
+    })
+    const cookie = bootstrap.headers['set-cookie']?.split(';')[0]
+    const boundary = '----mintgallery-live-photo-boundary'
+    const image = await sharp({
+      create: {
+        width: 12,
+        height: 8,
+        channels: 3,
+        background: { r: 45, g: 106, b: 79 },
+      },
+    })
+      .jpeg()
+      .toBuffer()
+    const video = Buffer.concat([
+      Buffer.from([0, 0, 0, 20]),
+      Buffer.from('ftyp'),
+      Buffer.from('qt  '),
+      Buffer.from([0, 0, 0, 0]),
+      Buffer.from('qt  '),
+    ])
+    const payload = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="IMG_2048.JPG"\r\nContent-Type: image/jpeg\r\n\r\n`,
+      ),
+      image,
+      Buffer.from(
+        `\r\n--${boundary}\r\nContent-Disposition: form-data; name="video"; filename="IMG_2048.MOV"\r\nContent-Type: video/quicktime\r\n\r\n`,
+      ),
+      video,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ])
+
+    const upload = await app.inject({
+      method: 'POST',
+      url: '/api/assets/live-photo?visibility=SHARED',
+      headers: {
+        cookie,
+        'content-type': `multipart/form-data; boundary=${boundary}`,
+      },
+      payload,
+    })
+    expect(upload.statusCode).toBe(201)
+    expect(upload.json().asset).toMatchObject({
+      type: 'LIVE_PHOTO',
+      status: 'READY',
+      originalName: 'IMG_2048.JPG',
+    })
+    expect(upload.json().asset.originalUrl).toMatch(/^\/api\/media\//)
+    expect(upload.json().asset.liveVideoUrl).toMatch(/^\/api\/media\//)
+    expect(upload.json().asset.liveVideoUrl).not.toBe(upload.json().asset.originalUrl)
+
+    const unauthorizedVideo = await app.inject({
+      method: 'GET',
+      url: upload.json().asset.liveVideoUrl,
+    })
+    expect(unauthorizedVideo.statusCode).toBe(401)
+
+    const videoRange = await app.inject({
+      method: 'GET',
+      url: upload.json().asset.liveVideoUrl,
+      headers: { cookie, range: 'bytes=0-3' },
+    })
+    expect(videoRange.statusCode).toBe(206)
+    expect(videoRange.headers['content-type']).toContain('video/quicktime')
+    expect(videoRange.rawPayload).toHaveLength(4)
+
+    const mismatchBoundary = '----mintgallery-mismatch-boundary'
+    const mismatchPayload = Buffer.concat([
+      Buffer.from(
+        `--${mismatchBoundary}\r\nContent-Disposition: form-data; name="photo"; filename="IMG_2048.JPG"\r\nContent-Type: image/jpeg\r\n\r\n`,
+      ),
+      image,
+      Buffer.from(
+        `\r\n--${mismatchBoundary}\r\nContent-Disposition: form-data; name="video"; filename="IMG_9999.MOV"\r\nContent-Type: video/quicktime\r\n\r\n`,
+      ),
+      video,
+      Buffer.from(`\r\n--${mismatchBoundary}--\r\n`),
+    ])
+    const mismatch = await app.inject({
+      method: 'POST',
+      url: '/api/assets/live-photo',
+      headers: {
+        cookie,
+        'content-type': `multipart/form-data; boundary=${mismatchBoundary}`,
+      },
+      payload: mismatchPayload,
+    })
+    expect(mismatch.statusCode).toBe(400)
+    expect(mismatch.json().message).toContain('主文件名需要相同')
+
+    const gallery = await app.inject({ method: 'GET', url: '/api/assets', headers: { cookie } })
+    expect(gallery.json().assets).toHaveLength(1)
+  })
+
   it('rejects weak bootstrap credentials', async () => {
     const response = await app.inject({
       method: 'POST',

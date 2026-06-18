@@ -32,6 +32,14 @@ npm install
 
 首个版本没有公网 HTTPS 防护，不要把该端口直接暴露到互联网。
 
+## GitHub Pages 静态预览
+
+每次推送 `main` 分支后，GitHub Actions 会自动更新静态预览：
+
+[https://dgal831143.github.io/MintGallery/](https://dgal831143.github.io/MintGallery/)
+
+该页面只展示仓库内的示例图片和基础查看器，不连接家庭电脑，不包含真实照片、账号、上传功能或 SQLite 数据库。完整相册仍需运行 Fastify 后端，GitHub Pages 不能替代家庭服务器。
+
 ## 数据位置
 
 默认数据保存在项目根目录的 `data/`：

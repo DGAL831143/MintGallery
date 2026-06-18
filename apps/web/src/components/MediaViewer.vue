@@ -121,7 +121,7 @@ watch(() => asset.value?.id, stopLive)
         </button>
       </div>
       <img
-        v-if="asset.type === 'IMAGE' && asset.previewUrl"
+        v-else-if="asset.type === 'IMAGE' && asset.previewUrl"
         :src="asset.previewUrl"
         :alt="asset.originalName"
         draggable="false"

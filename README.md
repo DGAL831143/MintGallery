@@ -32,6 +32,27 @@ npm install
 
 首个版本没有公网 HTTPS 防护，不要把该端口直接暴露到互联网。
 
+## Tailscale 私有访问
+
+生产访问由 Fastify 同时提供 Vue 页面和 API，再通过 Tailscale Serve 暴露给同一 tailnet 中的设备。不要使用 GitHub Pages 承担登录、上传或媒体访问。
+
+首次使用时，在 Tailscale 管理后台的 DNS 页面启用 HTTPS Certificates，然后运行：
+
+```powershell
+.\scripts\start-private.ps1 -DataDirectory 'G:\MintGalleryData'
+```
+
+另一个管理员终端配置持久的 tailnet HTTPS 代理：
+
+```powershell
+tailscale serve --bg 3000
+tailscale serve status
+```
+
+浏览器使用 Tailscale 返回的 `https://<设备名>.<tailnet>.ts.net/` 地址。只有已加入同一 tailnet 的设备可以访问；电脑必须保持开机、联网，并禁止自动休眠。
+
+`start-private.ps1` 默认启用 Secure Cookie、只监听 `127.0.0.1`，并拒绝把数据目录放在 Git 仓库内部。`-AllowInsecureHttp` 只允许用于临时诊断。
+
 ## GitHub Pages 静态预览
 
 每次推送 `main` 分支后，GitHub Actions 会自动更新静态预览：
@@ -42,7 +63,7 @@ npm install
 
 ## 数据位置
 
-默认数据保存在项目根目录的 `data/`：
+开发环境默认把数据保存在项目根目录的 `data/`。Tailscale 生产运行必须通过 `-DataDirectory` 指向项目外的独立目录：
 
 ```text
 data/
@@ -60,6 +81,8 @@ npm run dev
 ```
 
 `data/`、数据库和环境变量文件已被 Git 忽略。不要把家庭照片提交到 GitHub。
+
+不要把正在使用的 SQLite 数据库直接放入同步网盘。网盘只作为后续备份或通过独立存储适配器接入。
 
 ## 实况照片格式与上传
 
@@ -109,6 +132,7 @@ npm run start -w @mintgallery/server
 - 支持 JPEG、PNG、WebP、HEIC/HEIF、MP4 和 MOV；HEIC 是否能生成预览取决于本机 Sharp/libvips 能力，原件不会丢失。
 - 视频保持原始格式，不转码；浏览器不支持的 MOV 可能只能打开或下载。
 - Live Photo 已支持手动选择同名图片与 MOV 配对上传；暂不支持从 iPhone 相册自动提取双文件。
+- Live Photo 上传体验优化暂缓，当前优先保证普通图片和视频在 Tailscale 私有网络内上传。
 - 当前默认只有本地硬盘一个副本。界面显示“仅 1 个副本”时，请勿删除手机中的唯一原件。
 
 详细产品范围见 [prd.md](./prd.md)。

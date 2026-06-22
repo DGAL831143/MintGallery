@@ -74,6 +74,8 @@ export function openDatabase(databasePath: string): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
     CREATE INDEX IF NOT EXISTS idx_assets_feed ON assets(uploaded_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_assets_owner ON assets(owner_id, uploaded_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_assets_timeline
+      ON assets(COALESCE(shooting_time, uploaded_at) DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_asset_files_asset ON asset_files(asset_id);
     CREATE INDEX IF NOT EXISTS idx_folders_owner ON folders(owner_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_folder_assets_asset ON folder_assets(asset_id);

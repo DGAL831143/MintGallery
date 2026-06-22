@@ -20,6 +20,7 @@ export interface Asset {
   width: number | null
   height: number | null
   durationMs: number | null
+  shootingTime: string | null
   uploadedAt: string
   processingError: string | null
   originalUrl: string
@@ -28,6 +29,11 @@ export interface Asset {
   thumbnailUrl: string | null
   previewUrl: string | null
   backupStatus: 'NOT_CONFIGURED'
+}
+
+export interface TimelineMonth {
+  month: string
+  count: number
 }
 
 export interface Folder {

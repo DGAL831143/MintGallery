@@ -28,6 +28,7 @@ import {
   backfillLivePhotoDerivatives,
   createLivePhotoDerivative,
 } from './live-photo.js'
+import { backfillShootingTimes, extractShootingTime } from './metadata.js'
 import {
   createImageDerivatives,
   createReadStream,
@@ -76,7 +77,9 @@ interface AssetRow {
   width: number | null
   height: number | null
   duration_ms: number | null
+  shooting_time: number | null
   uploaded_at: number
+  sort_time?: number
   processing_error: string | null
   original_file_id: string
   live_original_file_id: string | null
@@ -183,6 +186,7 @@ function serializeAsset(row: AssetRow) {
     width: row.width,
     height: row.height,
     durationMs: row.duration_ms,
+    shootingTime: row.shooting_time === null ? null : new Date(row.shooting_time).toISOString(),
     uploadedAt: new Date(row.uploaded_at).toISOString(),
     processingError: row.processing_error,
     originalUrl: mediaUrl(row.original_file_id),
@@ -197,7 +201,8 @@ function serializeAsset(row: AssetRow) {
 function findAsset(database: DatabaseSync, assetId: string): AssetRow | undefined {
   return database
     .prepare(`
-      SELECT a.*, u.username AS owner_name,
+      SELECT a.*, COALESCE(a.shooting_time, a.uploaded_at) AS sort_time,
+        u.username AS owner_name,
         ${assetFileColumns}
       FROM assets a JOIN users u ON u.id = a.owner_id WHERE a.id = ?
     `)
@@ -245,7 +250,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.4.0' }))
+  app.get('/api/health', async () => ({ ok: true, version: '0.5.0' }))
 
   app.get('/api/bootstrap/status', async () => {
     const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }
@@ -623,6 +628,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const photoPath = moveOriginal(photo.upload, request.currentUser!.id, assetId, config)
     const videoPath = moveOriginal(video.upload, request.currentUser!.id, assetId, config)
     const uploadedAt = Date.now()
+    const shootingTime = await extractShootingTime(photoPath)
     const combinedHash = createHash('sha256')
       .update(photo.upload.sha256)
       .update(video.upload.sha256)
@@ -634,8 +640,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         .prepare(`
           INSERT INTO assets (
             id, owner_id, type, visibility, status, original_name, mime_type,
-            size_bytes, sha256, uploaded_at
-          ) VALUES (?, ?, 'LIVE_PHOTO', ?, 'PROCESSING', ?, ?, ?, ?, ?)
+            size_bytes, sha256, shooting_time, uploaded_at
+          ) VALUES (?, ?, 'LIVE_PHOTO', ?, 'PROCESSING', ?, ?, ?, ?, ?, ?)
         `)
         .run(
           assetId,
@@ -645,6 +651,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           photo.upload.mimeType,
           photo.upload.sizeBytes + video.upload.sizeBytes,
           combinedHash,
+          shootingTime,
           uploadedAt,
         )
       const insertFile = database.prepare(`
@@ -721,10 +728,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       cursor?: string
       limit?: string
       folderId?: string
+      month?: string
     }
     const scope = query.scope ?? 'SHARED'
     if (scope !== 'SHARED' && scope !== 'PRIVATE') {
       return reply.code(400).send({ message: '相册范围无效' })
+    }
+    if (query.month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(query.month)) {
+      return reply.code(400).send({ message: '月份格式无效' })
     }
 
     const requestedLimit = Number(query.limit ?? 30)
@@ -754,20 +765,32 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       )`)
       parameters.push(query.folderId)
     }
+    if (query.month) {
+      const [year, month] = query.month.split('-').map(Number)
+      const start = new Date(year!, month! - 1, 1).getTime()
+      const end = new Date(year!, month!, 1).getTime()
+      conditions.push('COALESCE(a.shooting_time, a.uploaded_at) >= ?')
+      conditions.push('COALESCE(a.shooting_time, a.uploaded_at) < ?')
+      parameters.push(start, end)
+    }
     if (cursor) {
-      conditions.push('(a.uploaded_at < ? OR (a.uploaded_at = ? AND a.id < ?))')
+      conditions.push(`(
+        COALESCE(a.shooting_time, a.uploaded_at) < ? OR
+        (COALESCE(a.shooting_time, a.uploaded_at) = ? AND a.id < ?)
+      )`)
       parameters.push(cursor[0], cursor[0], cursor[1])
     }
     parameters.push(limit + 1)
 
     const rows = database
       .prepare(`
-        SELECT a.*, u.username AS owner_name,
+        SELECT a.*, COALESCE(a.shooting_time, a.uploaded_at) AS sort_time,
+          u.username AS owner_name,
           ${assetFileColumns}
         FROM assets a
         JOIN users u ON u.id = a.owner_id
         WHERE ${conditions.join(' AND ')}
-        ORDER BY a.uploaded_at DESC, a.id DESC
+        ORDER BY sort_time DESC, a.id DESC
         LIMIT ?
       `)
       .all(...parameters) as unknown as AssetRow[]
@@ -776,10 +799,45 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const page = rows.slice(0, limit)
     const last = page.at(-1)
     const nextCursor = hasMore && last
-      ? Buffer.from(JSON.stringify([last.uploaded_at, last.id])).toString('base64url')
+      ? Buffer.from(JSON.stringify([last.sort_time, last.id])).toString('base64url')
       : null
 
     return { assets: page.map(serializeAsset), nextCursor }
+  })
+
+  app.get('/api/timeline/months', { preHandler: requireUser }, async (request, reply) => {
+    const query = request.query as { scope?: string; folderId?: string }
+    const scope = query.scope ?? 'SHARED'
+    if (scope !== 'SHARED' && scope !== 'PRIVATE') {
+      return reply.code(400).send({ message: '相册范围无效' })
+    }
+    const conditions = scope === 'SHARED'
+      ? ["a.visibility = 'SHARED'"]
+      : ["a.visibility = 'PRIVATE'", 'a.owner_id = ?']
+    const parameters: Array<string> = scope === 'PRIVATE' ? [request.currentUser!.id] : []
+    if (query.folderId) {
+      const folder = database.prepare('SELECT id FROM folders WHERE id = ? AND owner_id = ?')
+        .get(query.folderId, request.currentUser!.id)
+      if (!folder) return reply.code(404).send({ message: '文件夹不存在' })
+      conditions.push(`EXISTS (
+        SELECT 1 FROM folder_assets fa WHERE fa.folder_id = ? AND fa.asset_id = a.id
+      )`)
+      parameters.push(query.folderId)
+    }
+
+    const rows = database.prepare(`
+      SELECT
+        strftime(
+          '%Y-%m', COALESCE(a.shooting_time, a.uploaded_at) / 1000,
+          'unixepoch', 'localtime'
+        ) AS month,
+        COUNT(*) AS count
+      FROM assets a
+      WHERE ${conditions.join(' AND ')}
+      GROUP BY month
+      ORDER BY month DESC
+    `).all(...parameters) as Array<{ month: string; count: number }>
+    return { months: rows }
   })
 
   app.get('/api/media/:id', { preHandler: requireUser }, async (request, reply) => {
@@ -855,12 +913,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     reply.code(statusCode).send({ message })
   })
 
-  const backfillPromise = backfillLivePhotoDerivatives(database, config, (assetId, error) => {
-    app.log.warn({ error, assetId }, 'Live Photo derivative backfill failed')
-  }).then((count) => {
-    if (count > 0) app.log.info({ count }, 'Live Photo derivatives backfilled')
-  }).catch((error) => {
-    app.log.error({ error }, 'Live Photo derivative backfill could not start')
+  const backfillPromise = Promise.all([
+    backfillLivePhotoDerivatives(database, config, (assetId, error) => {
+      app.log.warn({ error, assetId }, 'Live Photo derivative backfill failed')
+    }).then((count) => {
+      if (count > 0) app.log.info({ count }, 'Live Photo derivatives backfilled')
+    }),
+    backfillShootingTimes(database, config).then((result) => {
+      if (result.scanned > 0) app.log.info(result, 'Shooting times backfilled')
+    }),
+  ]).catch((error) => {
+    app.log.error({ error }, 'Media maintenance backfill could not start')
   })
 
   app.addHook('onClose', async () => {

@@ -16,6 +16,7 @@ const livePhoto: Asset = {
   width: 3024,
   height: 4032,
   durationMs: 1500,
+  shootingTime: null,
   uploadedAt: '2026-06-18T10:38:00.000Z',
   processingError: null,
   originalUrl: '/api/assets/live-photo-1/original',

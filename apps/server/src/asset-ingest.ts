@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { rmSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import type { AppConfig } from './config.js'
+import { extractShootingTime } from './metadata.js'
 import {
   createImageDerivatives,
   fileSize,
@@ -32,6 +33,9 @@ export async function ingestSingleAsset(options: IngestSingleAssetOptions): Prom
   const originalFileId = randomUUID()
   const originalKind = upload.assetType === 'IMAGE' ? 'ORIGINAL_IMAGE' : 'ORIGINAL_VIDEO'
   const uploadedAt = Date.now()
+  const shootingTime = upload.assetType === 'IMAGE'
+    ? await extractShootingTime(originalPath)
+    : null
 
   database.exec('BEGIN')
   try {
@@ -39,8 +43,8 @@ export async function ingestSingleAsset(options: IngestSingleAssetOptions): Prom
       .prepare(`
         INSERT INTO assets (
           id, owner_id, type, visibility, status, original_name, mime_type,
-          size_bytes, sha256, uploaded_at
-        ) VALUES (?, ?, ?, ?, 'PROCESSING', ?, ?, ?, ?, ?)
+          size_bytes, sha256, shooting_time, uploaded_at
+        ) VALUES (?, ?, ?, ?, 'PROCESSING', ?, ?, ?, ?, ?, ?)
       `)
       .run(
         assetId,
@@ -51,6 +55,7 @@ export async function ingestSingleAsset(options: IngestSingleAssetOptions): Prom
         upload.mimeType,
         upload.sizeBytes,
         upload.sha256,
+        shootingTime,
         uploadedAt,
       )
     database

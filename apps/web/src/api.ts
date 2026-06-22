@@ -1,4 +1,4 @@
-import type { Asset, Folder, StorageSummary, User } from './types'
+import type { Asset, Folder, StorageSummary, TimelineMonth, User } from './types'
 
 export class ApiError extends Error {
   constructor(
@@ -53,11 +53,25 @@ export const authApi = {
 }
 
 export const galleryApi = {
-  list: (scope: 'SHARED' | 'PRIVATE', cursor?: string | null, folderId?: string | null) => {
+  list: (
+    scope: 'SHARED' | 'PRIVATE',
+    cursor?: string | null,
+    folderId?: string | null,
+    month?: string | null,
+  ) => {
     const search = new URLSearchParams({ scope, limit: '30' })
     if (cursor) search.set('cursor', cursor)
     if (folderId) search.set('folderId', folderId)
+    if (month) search.set('month', month)
     return api<{ assets: Asset[]; nextCursor: string | null }>(`/api/assets?${search}`)
+  },
+}
+
+export const timelineApi = {
+  months: (scope: 'SHARED' | 'PRIVATE', folderId?: string | null) => {
+    const search = new URLSearchParams({ scope })
+    if (folderId) search.set('folderId', folderId)
+    return api<{ months: TimelineMonth[] }>(`/api/timeline/months?${search}`)
   },
 }
 

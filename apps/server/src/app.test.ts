@@ -131,6 +131,73 @@ describe('MintGallery API', () => {
     expect(cachedThumbnail.statusCode).toBe(304)
   })
 
+  it('orders photos by shooting time and filters timeline months', async () => {
+    const bootstrap = await app.inject({
+      method: 'POST',
+      url: '/api/bootstrap',
+      payload: { username: 'owner', password: 'strong-password' },
+    })
+    const cookie = bootstrap.headers['set-cookie']?.split(';')[0]
+
+    const uploadDatedPhoto = async (filename: string, date: string) => {
+      const boundary = `----mintgallery-timeline-${filename}`
+      const image = await sharp({
+        create: { width: 8, height: 8, channels: 3, background: '#52b788' },
+      })
+        .jpeg()
+        .withExif({ IFD2: { DateTimeOriginal: date } })
+        .toBuffer()
+      const payload = Buffer.concat([
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: image/jpeg\r\n\r\n`,
+        ),
+        image,
+        Buffer.from(`\r\n--${boundary}--\r\n`),
+      ])
+      return app.inject({
+        method: 'POST',
+        url: '/api/assets?visibility=PRIVATE',
+        headers: { cookie, 'content-type': `multipart/form-data; boundary=${boundary}` },
+        payload,
+      })
+    }
+
+    const older = await uploadDatedPhoto('winter.jpg', '2024:01:10 08:30:00')
+    const newer = await uploadDatedPhoto('summer.jpg', '2024:06:20 18:45:00')
+    expect(older.statusCode).toBe(201)
+    expect(newer.statusCode).toBe(201)
+    expect(newer.json().asset.shootingTime).toContain('2024-06-20')
+
+    const gallery = await app.inject({
+      method: 'GET',
+      url: '/api/assets?scope=PRIVATE',
+      headers: { cookie },
+    })
+    expect(gallery.json().assets.map((asset: { originalName: string }) => asset.originalName)).toEqual([
+      'summer.jpg',
+      'winter.jpg',
+    ])
+
+    const months = await app.inject({
+      method: 'GET',
+      url: '/api/timeline/months?scope=PRIVATE',
+      headers: { cookie },
+    })
+    expect(months.json().months).toEqual([
+      { month: '2024-06', count: 1 },
+      { month: '2024-01', count: 1 },
+    ])
+
+    const january = await app.inject({
+      method: 'GET',
+      url: '/api/assets?scope=PRIVATE&month=2024-01',
+      headers: { cookie },
+    })
+    expect(january.json().assets.map((asset: { originalName: string }) => asset.originalName)).toEqual([
+      'winter.jpg',
+    ])
+  })
+
   it('organizes visible assets in personal folders without deleting media', async () => {
     const bootstrap = await app.inject({
       method: 'POST',

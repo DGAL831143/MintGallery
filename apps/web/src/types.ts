@@ -23,10 +23,18 @@ export interface Asset {
   uploadedAt: string
   processingError: string | null
   originalUrl: string
+  liveOriginalUrl: string | null
   liveVideoUrl: string | null
   thumbnailUrl: string | null
   previewUrl: string | null
   backupStatus: 'NOT_CONFIGURED'
+}
+
+export interface Folder {
+  id: string
+  name: string
+  itemCount: number
+  createdAt: string
 }
 
 export interface UploadItem {

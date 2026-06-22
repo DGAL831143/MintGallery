@@ -1,4 +1,4 @@
-import type { Asset, StorageSummary, User } from './types'
+import type { Asset, Folder, StorageSummary, User } from './types'
 
 export class ApiError extends Error {
   constructor(
@@ -53,11 +53,29 @@ export const authApi = {
 }
 
 export const galleryApi = {
-  list: (scope: 'SHARED' | 'PRIVATE', cursor?: string | null) => {
+  list: (scope: 'SHARED' | 'PRIVATE', cursor?: string | null, folderId?: string | null) => {
     const search = new URLSearchParams({ scope, limit: '30' })
     if (cursor) search.set('cursor', cursor)
+    if (folderId) search.set('folderId', folderId)
     return api<{ assets: Asset[]; nextCursor: string | null }>(`/api/assets?${search}`)
   },
+}
+
+export const folderApi = {
+  list: () => api<{ folders: Folder[] }>('/api/folders'),
+  create: (name: string) => api<{ folder: Folder }>('/api/folders', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  }),
+  remove: (id: string) => api<{ ok: boolean }>(`/api/folders/${id}`, { method: 'DELETE' }),
+  addAssets: (id: string, assetIds: string[]) => api<{ ok: boolean; changed: number }>(
+    `/api/folders/${id}/assets`,
+    { method: 'POST', body: JSON.stringify({ assetIds }) },
+  ),
+  removeAssets: (id: string, assetIds: string[]) => api<{ ok: boolean; changed: number }>(
+    `/api/folders/${id}/assets`,
+    { method: 'DELETE', body: JSON.stringify({ assetIds }) },
+  ),
 }
 
 export const adminApi = {

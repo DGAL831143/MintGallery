@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ChevronLeft, ChevronRight, Download, Film, Info, Play, X } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ChevronLeft, ChevronRight, Download, Film, Info, LoaderCircle, Play, RotateCcw, X } from 'lucide-vue-next'
 import { formatBytes, formatDate } from '../format'
 import type { Asset } from '../types'
 
@@ -9,15 +9,28 @@ const emit = defineEmits<{ close: []; change: [index: number] }>()
 const asset = computed(() => props.assets[props.index])
 const liveVideo = ref<HTMLVideoElement | null>(null)
 const livePlaying = ref(false)
+const liveRequested = ref(false)
+const liveLoading = ref(false)
+const liveError = ref('')
 
 async function playLive() {
-  if (asset.value?.type !== 'LIVE_PHOTO' || !liveVideo.value) return
-  livePlaying.value = true
+  if (asset.value?.type !== 'LIVE_PHOTO' || !asset.value.liveVideoUrl) return
+  liveError.value = ''
+  liveLoading.value = true
+  if (!liveRequested.value) {
+    liveRequested.value = true
+    await nextTick()
+  }
+  if (!liveVideo.value) return
   try {
     liveVideo.value.currentTime = 0
     await liveVideo.value.play()
+    livePlaying.value = true
+    liveLoading.value = false
   } catch {
     livePlaying.value = false
+    liveLoading.value = false
+    liveError.value = '动态部分暂时无法播放'
   }
 }
 
@@ -27,6 +40,19 @@ function stopLive() {
     liveVideo.value.currentTime = 0
   }
   livePlaying.value = false
+}
+
+function resetLive() {
+  stopLive()
+  liveRequested.value = false
+  liveLoading.value = false
+  liveError.value = ''
+}
+
+function liveFailed() {
+  livePlaying.value = false
+  liveLoading.value = false
+  liveError.value = '动态部分加载失败，静态照片仍可查看'
 }
 
 function toggleLive() {
@@ -52,10 +78,10 @@ function onKey(event: KeyboardEvent) {
 
 onMounted(() => window.addEventListener('keydown', onKey))
 onBeforeUnmount(() => {
-  stopLive()
+  resetLive()
   window.removeEventListener('keydown', onKey)
 })
-watch(() => asset.value?.id, stopLive)
+watch(() => asset.value?.id, resetLive)
 </script>
 
 <template>
@@ -71,7 +97,7 @@ watch(() => asset.value?.id, stopLive)
       <a
         v-if="asset.type === 'LIVE_PHOTO' && asset.liveVideoUrl"
         class="icon-button viewer-action"
-        :href="asset.liveVideoUrl"
+        :href="asset.liveOriginalUrl ?? asset.liveVideoUrl"
         target="_blank"
         title="打开实况视频原件"
       >
@@ -99,26 +125,32 @@ watch(() => asset.value?.id, stopLive)
         <img :src="asset.previewUrl" :alt="asset.originalName" draggable="false" />
         <video
           ref="liveVideo"
-          :src="asset.liveVideoUrl"
+          :src="liveRequested ? asset.liveVideoUrl : undefined"
           :class="{ active: livePlaying }"
           playsinline
           muted
-          preload="metadata"
+          preload="none"
+          @waiting="liveLoading = true"
+          @playing="liveLoading = false"
+          @error="liveFailed"
           @ended="stopLive"
         ></video>
         <span class="live-viewer-badge">LIVE</span>
         <button
           class="live-play-button"
           type="button"
-          :title="livePlaying ? '停止实况' : '播放实况'"
+          :title="livePlaying ? '停止实况' : liveError ? '重试实况' : '播放实况'"
           @mouseenter.stop
           @pointerdown.stop
           @pointerup.stop
           @click.stop="toggleLive"
         >
-          <Play v-if="!livePlaying" :size="18" fill="currentColor" />
-          <span>{{ livePlaying ? '正在播放' : '播放实况' }}</span>
+          <LoaderCircle v-if="liveLoading" class="spin" :size="18" />
+          <RotateCcw v-else-if="liveError" :size="18" />
+          <Play v-else-if="!livePlaying" :size="18" fill="currentColor" />
+          <span>{{ liveLoading ? '正在加载' : livePlaying ? '正在播放' : liveError ? '重新播放' : '播放实况' }}</span>
         </button>
+        <span v-if="liveError" class="live-play-error">{{ liveError }}</span>
       </div>
       <img
         v-else-if="asset.type === 'IMAGE' && asset.previewUrl"

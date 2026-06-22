@@ -1,6 +1,6 @@
 {
   "name": "mintgallery",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "description": "A private, local-first family gallery.",
   "workspaces": [
@@ -14,7 +14,7 @@
     "typecheck": "npm run typecheck -w @mintgallery/server && npm run typecheck -w @mintgallery/web"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1"
+    "concurrently": "^10.0.3"
   },
   "engines": {
     "node": ">=24.0.0"

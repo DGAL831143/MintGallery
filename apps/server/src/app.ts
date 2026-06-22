@@ -25,6 +25,10 @@ import { loadConfig, type AppConfig } from './config.js'
 import { openDatabase } from './db.js'
 import { createResumableUploads } from './resumable.js'
 import {
+  backfillLivePhotoDerivatives,
+  createLivePhotoDerivative,
+} from './live-photo.js'
+import {
   createImageDerivatives,
   createReadStream,
   discardTemporaryUpload,
@@ -75,6 +79,7 @@ interface AssetRow {
   uploaded_at: number
   processing_error: string | null
   original_file_id: string
+  live_original_file_id: string | null
   live_video_file_id: string | null
   thumbnail_file_id: string | null
   preview_file_id: string | null
@@ -112,6 +117,12 @@ function fileBaseName(filename: string): string {
   return path.parse(filename).name.normalize('NFC').toLocaleLowerCase()
 }
 
+function cleanFolderName(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const name = value.trim().normalize('NFC')
+  return name.length <= 40 && !/[\u0000-\u001f]/.test(name) ? name : ''
+}
+
 const assetFileColumns = `
   (SELECT id FROM asset_files
     WHERE asset_id = a.id
@@ -119,7 +130,13 @@ const assetFileColumns = `
     LIMIT 1) AS original_file_id,
   (SELECT id FROM asset_files
     WHERE asset_id = a.id AND kind = 'ORIGINAL_VIDEO' AND a.type = 'LIVE_PHOTO'
-    LIMIT 1) AS live_video_file_id,
+    LIMIT 1) AS live_original_file_id,
+  COALESCE(
+    (SELECT id FROM asset_files
+      WHERE asset_id = a.id AND kind = 'LIVE_PREVIEW' AND a.type = 'LIVE_PHOTO' LIMIT 1),
+    (SELECT id FROM asset_files
+      WHERE asset_id = a.id AND kind = 'ORIGINAL_VIDEO' AND a.type = 'LIVE_PHOTO' LIMIT 1)
+  ) AS live_video_file_id,
   (SELECT id FROM asset_files
     WHERE asset_id = a.id AND kind = 'THUMBNAIL' LIMIT 1) AS thumbnail_file_id,
   (SELECT id FROM asset_files
@@ -169,6 +186,7 @@ function serializeAsset(row: AssetRow) {
     uploadedAt: new Date(row.uploaded_at).toISOString(),
     processingError: row.processing_error,
     originalUrl: mediaUrl(row.original_file_id),
+    liveOriginalUrl: mediaUrl(row.live_original_file_id),
     liveVideoUrl: mediaUrl(row.live_video_file_id),
     thumbnailUrl: mediaUrl(row.thumbnail_file_id),
     previewUrl: mediaUrl(row.preview_file_id),
@@ -227,7 +245,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.3.1' }))
+  app.get('/api/health', async () => ({ ok: true, version: '0.4.0' }))
 
   app.get('/api/bootstrap/status', async () => {
     const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }
@@ -392,6 +410,116 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       .get() as { count: number; bytes: number }
     return { disk, assets: { count: assets.count, originalBytes: assets.bytes } }
   })
+
+  app.get('/api/folders', { preHandler: requireUser }, async (request) => {
+    const rows = database.prepare(`
+      SELECT f.id, f.name, f.created_at, COUNT(fa.asset_id) AS item_count
+      FROM folders f
+      LEFT JOIN folder_assets fa ON fa.folder_id = f.id
+      WHERE f.owner_id = ?
+      GROUP BY f.id
+      ORDER BY f.name COLLATE NOCASE, f.created_at
+    `).all(request.currentUser!.id) as Array<{
+      id: string
+      name: string
+      created_at: number
+      item_count: number
+    }>
+    return {
+      folders: rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        itemCount: row.item_count,
+        createdAt: new Date(row.created_at).toISOString(),
+      })),
+    }
+  })
+
+  app.post('/api/folders', { preHandler: requireUser }, async (request, reply) => {
+    const body = request.body as { name?: unknown } | undefined
+    const name = cleanFolderName(body?.name)
+    if (!name) return reply.code(400).send({ message: '文件夹名称需为 1 到 40 个字符' })
+    const id = randomUUID()
+    const createdAt = Date.now()
+    try {
+      database.prepare('INSERT INTO folders (id, owner_id, name, created_at) VALUES (?, ?, ?, ?)')
+        .run(id, request.currentUser!.id, name, createdAt)
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
+        return reply.code(409).send({ message: '已经存在同名文件夹' })
+      }
+      throw error
+    }
+    return reply.code(201).send({
+      folder: { id, name, itemCount: 0, createdAt: new Date(createdAt).toISOString() },
+    })
+  })
+
+  app.delete('/api/folders/:id', { preHandler: requireUser }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const result = database.prepare('DELETE FROM folders WHERE id = ? AND owner_id = ?')
+      .run(id, request.currentUser!.id)
+    if (result.changes === 0) return reply.code(404).send({ message: '文件夹不存在' })
+    return { ok: true }
+  })
+
+  const updateFolderAssets = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    remove: boolean,
+  ) => {
+    const { id } = request.params as { id: string }
+    const folder = database.prepare('SELECT id FROM folders WHERE id = ? AND owner_id = ?')
+      .get(id, request.currentUser!.id)
+    if (!folder) return reply.code(404).send({ message: '文件夹不存在' })
+    const body = request.body as { assetIds?: unknown } | undefined
+    if (!Array.isArray(body?.assetIds)) {
+      return reply.code(400).send({ message: '请选择需要整理的照片' })
+    }
+    const assetIds = [...new Set(body.assetIds.filter((value): value is string => typeof value === 'string'))]
+    if (assetIds.length === 0 || assetIds.length > 100) {
+      return reply.code(400).send({ message: '每次请选择 1 到 100 个项目' })
+    }
+
+    if (!remove) {
+      const placeholders = assetIds.map(() => '?').join(', ')
+      const visibility = "(visibility = 'SHARED' OR owner_id = ?)"
+      const parameters = [request.currentUser!.id, ...assetIds]
+      const allowed = database.prepare(`
+        SELECT id FROM assets
+        WHERE ${visibility} AND id IN (${placeholders})
+      `).all(...parameters) as Array<{ id: string }>
+      if (allowed.length !== assetIds.length) {
+        return reply.code(403).send({ message: '部分照片不存在或当前账号无权访问' })
+      }
+    }
+
+    database.exec('BEGIN')
+    try {
+      const statement = remove
+        ? database.prepare('DELETE FROM folder_assets WHERE folder_id = ? AND asset_id = ?')
+        : database.prepare(`
+            INSERT OR IGNORE INTO folder_assets (folder_id, asset_id, added_at) VALUES (?, ?, ?)
+          `)
+      let changed = 0
+      for (const assetId of assetIds) {
+        const result = remove
+          ? statement.run(id, assetId)
+          : statement.run(id, assetId, Date.now())
+        changed += Number(result.changes)
+      }
+      database.exec('COMMIT')
+      return { ok: true, changed }
+    } catch (error) {
+      database.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  app.post('/api/folders/:id/assets', { preHandler: requireUser }, async (request, reply) =>
+    updateFolderAssets(request, reply, false))
+  app.delete('/api/folders/:id/assets', { preHandler: requireUser }, async (request, reply) =>
+    updateFolderAssets(request, reply, true))
 
   const resumableHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     reply.hijack()
@@ -561,6 +689,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         .run(message, assetId)
     }
 
+    try {
+      const derivative = await createLivePhotoDerivative(videoPath, assetId, config)
+      database.prepare(`
+        INSERT INTO asset_files (id, asset_id, kind, relative_path, mime_type, size_bytes)
+        VALUES (?, ?, 'LIVE_PREVIEW', ?, 'video/mp4', ?)
+      `).run(
+        randomUUID(),
+        assetId,
+        toRelativeStoragePath(config, derivative.path),
+        derivative.sizeBytes,
+      )
+    } catch (error) {
+      request.log.warn({ error, assetId }, 'Live Photo web derivative failed')
+    }
+
     const created = database
       .prepare(`
         SELECT a.*, u.username AS owner_name,
@@ -573,7 +716,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   })
 
   app.get('/api/assets', { preHandler: requireUser }, async (request, reply) => {
-    const query = request.query as { scope?: string; cursor?: string; limit?: string }
+    const query = request.query as {
+      scope?: string
+      cursor?: string
+      limit?: string
+      folderId?: string
+    }
     const scope = query.scope ?? 'SHARED'
     if (scope !== 'SHARED' && scope !== 'PRIVATE') {
       return reply.code(400).send({ message: '相册范围无效' })
@@ -597,6 +745,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       ? ["a.visibility = 'SHARED'"]
       : ["a.visibility = 'PRIVATE'", 'a.owner_id = ?']
     const parameters: Array<string | number> = scope === 'PRIVATE' ? [request.currentUser!.id] : []
+    if (query.folderId) {
+      const folder = database.prepare('SELECT id FROM folders WHERE id = ? AND owner_id = ?')
+        .get(query.folderId, request.currentUser!.id)
+      if (!folder) return reply.code(404).send({ message: '文件夹不存在' })
+      conditions.push(`EXISTS (
+        SELECT 1 FROM folder_assets fa WHERE fa.folder_id = ? AND fa.asset_id = a.id
+      )`)
+      parameters.push(query.folderId)
+    }
     if (cursor) {
       conditions.push('(a.uploaded_at < ? OR (a.uploaded_at = ? AND a.id < ?))')
       parameters.push(cursor[0], cursor[0], cursor[1])
@@ -647,9 +804,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
     const size = statSync(filePath).size
     const range = request.headers.range
-    reply.header('Cache-Control', 'private, max-age=86400')
+    const etag = `"${row.id}-${size}"`
+    reply.header('Cache-Control', 'private, max-age=604800, immutable')
+    reply.header('ETag', etag)
     reply.header('Accept-Ranges', 'bytes')
     reply.type(row.mime_type)
+
+    if (!range && request.headers['if-none-match'] === etag) {
+      return reply.code(304).send()
+    }
 
     if (range) {
       const match = /^bytes=(\d*)-(\d*)$/.exec(range)
@@ -692,7 +855,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     reply.code(statusCode).send({ message })
   })
 
+  const backfillPromise = backfillLivePhotoDerivatives(database, config, (assetId, error) => {
+    app.log.warn({ error, assetId }, 'Live Photo derivative backfill failed')
+  }).then((count) => {
+    if (count > 0) app.log.info({ count }, 'Live Photo derivatives backfilled')
+  }).catch((error) => {
+    app.log.error({ error }, 'Live Photo derivative backfill could not start')
+  })
+
   app.addHook('onClose', async () => {
+    await backfillPromise
     database.close()
   })
 

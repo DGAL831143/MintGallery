@@ -121,6 +121,126 @@ describe('MintGallery API', () => {
     expect(thumbnail.statusCode).toBe(200)
     expect(thumbnail.headers['content-type']).toContain('image/webp')
     expect(thumbnail.rawPayload.length).toBeGreaterThan(0)
+    expect(thumbnail.headers.etag).toBeTruthy()
+
+    const cachedThumbnail = await app.inject({
+      method: 'GET',
+      url: asset.thumbnailUrl,
+      headers: { cookie, 'if-none-match': thumbnail.headers.etag },
+    })
+    expect(cachedThumbnail.statusCode).toBe(304)
+  })
+
+  it('organizes visible assets in personal folders without deleting media', async () => {
+    const bootstrap = await app.inject({
+      method: 'POST',
+      url: '/api/bootstrap',
+      payload: { username: 'owner', password: 'strong-password' },
+    })
+    const cookie = bootstrap.headers['set-cookie']?.split(';')[0]
+    const boundary = '----mintgallery-folder-boundary'
+    const image = await sharp({
+      create: { width: 8, height: 8, channels: 3, background: { r: 45, g: 106, b: 79 } },
+    }).png().toBuffer()
+    const payload = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="folder.png"\r\nContent-Type: image/png\r\n\r\n`,
+      ),
+      image,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ])
+    const upload = await app.inject({
+      method: 'POST',
+      url: '/api/assets?visibility=PRIVATE',
+      headers: { cookie, 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload,
+    })
+    const assetId = upload.json().asset.id as string
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/folders',
+      headers: { cookie },
+      payload: { name: '旅行' },
+    })
+    expect(created.statusCode).toBe(201)
+    const folderId = created.json().folder.id as string
+    const duplicate = await app.inject({
+      method: 'POST',
+      url: '/api/folders',
+      headers: { cookie },
+      payload: { name: '旅行' },
+    })
+    expect(duplicate.statusCode).toBe(409)
+
+    const added = await app.inject({
+      method: 'POST',
+      url: `/api/folders/${folderId}/assets`,
+      headers: { cookie },
+      payload: { assetIds: [assetId] },
+    })
+    expect(added.json()).toEqual({ ok: true, changed: 1 })
+    const folders = await app.inject({ method: 'GET', url: '/api/folders', headers: { cookie } })
+    expect(folders.json().folders[0]).toMatchObject({ name: '旅行', itemCount: 1 })
+    const filtered = await app.inject({
+      method: 'GET',
+      url: `/api/assets?scope=PRIVATE&folderId=${folderId}`,
+      headers: { cookie },
+    })
+    expect(filtered.json().assets.map((asset: { id: string }) => asset.id)).toEqual([assetId])
+
+    const createMember = await app.inject({
+      method: 'POST',
+      url: '/api/users',
+      headers: { cookie },
+      payload: { username: 'family', temporaryPassword: 'temporary-password' },
+    })
+    expect(createMember.statusCode).toBe(201)
+    const memberLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'family', password: 'temporary-password' },
+    })
+    const memberCookie = memberLogin.headers['set-cookie']?.split(';')[0]
+    const memberFolder = await app.inject({
+      method: 'POST',
+      url: '/api/folders',
+      headers: { cookie: memberCookie },
+      payload: { name: '自己的文件夹' },
+    })
+    const forbidden = await app.inject({
+      method: 'POST',
+      url: `/api/folders/${memberFolder.json().folder.id}/assets`,
+      headers: { cookie: memberCookie },
+      payload: { assetIds: [assetId] },
+    })
+    expect(forbidden.statusCode).toBe(403)
+
+    const removed = await app.inject({
+      method: 'DELETE',
+      url: `/api/folders/${folderId}/assets`,
+      headers: { cookie },
+      payload: { assetIds: [assetId] },
+    })
+    expect(removed.json()).toEqual({ ok: true, changed: 1 })
+    await app.inject({
+      method: 'POST',
+      url: `/api/folders/${folderId}/assets`,
+      headers: { cookie },
+      payload: { assetIds: [assetId] },
+    })
+    const deleted = await app.inject({
+      method: 'DELETE',
+      url: `/api/folders/${folderId}`,
+      headers: { cookie },
+    })
+    expect(deleted.json()).toEqual({ ok: true })
+    const gallery = await app.inject({
+      method: 'GET',
+      url: '/api/assets?scope=PRIVATE',
+      headers: { cookie },
+    })
+    expect(gallery.json().assets.map((asset: { id: string }) => asset.id)).toContain(assetId)
   })
 
   it('resumes an authenticated tus upload from the stored offset', async () => {
@@ -296,6 +416,7 @@ describe('MintGallery API', () => {
       originalName: 'IMG_2048.JPG',
     })
     expect(upload.json().asset.originalUrl).toMatch(/^\/api\/media\//)
+    expect(upload.json().asset.liveOriginalUrl).toMatch(/^\/api\/media\//)
     expect(upload.json().asset.liveVideoUrl).toMatch(/^\/api\/media\//)
     expect(upload.json().asset.liveVideoUrl).not.toBe(upload.json().asset.originalUrl)
 

@@ -39,7 +39,7 @@ npm install
 首次使用时，在 Tailscale 管理后台的 DNS 页面启用 HTTPS Certificates，然后运行：
 
 ```powershell
-.\scripts\start-private.ps1 -DataDirectory 'G:\MintGalleryData'
+.\scripts\start-private.ps1 -DataDirectory 'F:\MintGallery\data'
 ```
 
 另一个管理员终端配置持久的 tailnet HTTPS 代理：
@@ -53,6 +53,16 @@ tailscale serve status
 
 `start-private.ps1` 默认启用 Secure Cookie、只监听 `127.0.0.1`，并拒绝把数据目录放在 Git 仓库内部。`-AllowInsecureHttp` 只允许用于临时诊断。
 
+在“以管理员身份运行”的 Windows PowerShell 中可注册开机启动任务；任务以 Windows `SYSTEM` 账号运行，不需要保存登录密码：
+
+```powershell
+.\scripts\install-startup-task.ps1 `
+  -DataDirectory 'F:\MintGallery\data' `
+  -NodePath 'F:\nodejs\node.exe'
+```
+
+运行日志保存在 `F:\MintGallery\logs\scheduled-server.log`。
+
 ## GitHub Pages 静态预览
 
 每次推送 `main` 分支后，GitHub Actions 会自动更新静态预览：
@@ -63,10 +73,10 @@ tailscale serve status
 
 ## 数据位置
 
-开发环境默认把数据保存在项目根目录的 `data/`。Tailscale 生产运行必须通过 `-DataDirectory` 指向项目外的独立目录：
+开发环境默认把数据保存在项目根目录的 `data/`。当前 Tailscale 生产数据位于 `F:\MintGallery\data`：
 
 ```text
-data/
+F:\MintGallery\data\
   originals/     原始照片和视频
   derivatives/   WebP 缩略图和预览图
   temporary/     上传临时文件
@@ -128,7 +138,8 @@ npm run start -w @mintgallery/server
 
 ## 当前版本边界
 
-- 单文件上限为 2 GB，尚未实现 tus 断点续传。
+- 普通照片和视频使用 tus 按 1 MB 分片上传；网络中断后自动重试，并从服务端已确认的偏移继续。
+- 单文件上限为 2 GB；Live Photo 双文件入口暂时仍使用一次性上传，不具备断点续传。
 - 支持 JPEG、PNG、WebP、HEIC/HEIF、MP4 和 MOV；HEIC 是否能生成预览取决于本机 Sharp/libvips 能力，原件不会丢失。
 - 视频保持原始格式，不转码；浏览器不支持的 MOV 可能只能打开或下载。
 - Live Photo 已支持手动选择同名图片与 MOV 配对上传；暂不支持从 iPhone 相册自动提取双文件。

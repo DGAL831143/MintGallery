@@ -82,7 +82,7 @@ onMounted(() => void load(true))
       </div>
 
       <div class="topbar-actions">
-        <UploadPanel @uploaded="receiveAsset" />
+        <UploadPanel :owner-id="user.id" @uploaded="receiveAsset" />
         <button v-if="user.role === 'ADMIN'" class="icon-button" title="相册管理" @click="adminOpen = true">
           <Settings :size="20" />
         </button>

@@ -10,13 +10,15 @@ import {
   LoaderCircle,
   X,
 } from 'lucide-vue-next'
-import { uploadAsset, uploadLivePhoto } from '../api'
+import { uploadLivePhoto } from '../api'
 import { formatBytes } from '../format'
+import { uploadResumableAsset } from '../resumableUpload'
 import type { Asset, UploadItem } from '../types'
 
 type UploadMode = 'STANDARD' | 'LIVE_PHOTO'
 type LiveStatus = 'IDLE' | 'UPLOADING' | 'DONE' | 'FAILED'
 
+const props = defineProps<{ ownerId: string }>()
 const emit = defineEmits<{ uploaded: [asset: Asset] }>()
 const standardInput = ref<HTMLInputElement | null>(null)
 const liveInput = ref<HTMLInputElement | null>(null)
@@ -102,7 +104,7 @@ async function runQueue() {
     item.status = 'UPLOADING'
     item.error = null
     try {
-      const asset = await uploadAsset(item.file, visibility.value, (progress) => {
+      const asset = await uploadResumableAsset(item.file, visibility.value, props.ownerId, (progress) => {
         item.progress = progress
       })
       item.progress = 100

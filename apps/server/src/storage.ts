@@ -89,6 +89,30 @@ export async function receiveUpload(
   }
 }
 
+export async function inspectStoredUpload(temporaryPath: string): Promise<SavedUpload> {
+  const detected = await fileTypeFromFile(temporaryPath)
+  const allowed = detected ? ALLOWED_TYPES.get(detected.mime) : undefined
+  if (!detected || !allowed) {
+    throw new Error('不支持的文件格式')
+  }
+
+  const hash = createHash('sha256')
+  let sizeBytes = 0
+  for await (const chunk of createReadStream(temporaryPath)) {
+    hash.update(chunk)
+    sizeBytes += chunk.length
+  }
+
+  return {
+    temporaryPath,
+    sizeBytes,
+    sha256: hash.digest('hex'),
+    mimeType: detected.mime,
+    extension: allowed.extension,
+    assetType: allowed.assetType,
+  }
+}
+
 export function moveOriginal(
   upload: SavedUpload,
   ownerId: string,

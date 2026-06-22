@@ -20,8 +20,10 @@ import {
   verifyPassword,
   type SessionUser,
 } from './auth.js'
+import { ingestSingleAsset } from './asset-ingest.js'
 import { loadConfig, type AppConfig } from './config.js'
 import { openDatabase } from './db.js'
+import { createResumableUploads } from './resumable.js'
 import {
   createImageDerivatives,
   createReadStream,
@@ -174,6 +176,16 @@ function serializeAsset(row: AssetRow) {
   }
 }
 
+function findAsset(database: DatabaseSync, assetId: string): AssetRow | undefined {
+  return database
+    .prepare(`
+      SELECT a.*, u.username AS owner_name,
+        ${assetFileColumns}
+      FROM assets a JOIN users u ON u.id = a.owner_id WHERE a.id = ?
+    `)
+    .get(assetId) as unknown as AssetRow | undefined
+}
+
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
   const config = loadConfig(options.config)
   ensureStorageDirectories(config)
@@ -191,6 +203,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       fields: 5,
     },
   })
+  app.addContentTypeParser(
+    'application/offset+octet-stream',
+    (_request, _payload, done) => done(null),
+  )
+
+  const resumableUploads = createResumableUploads(database, config)
 
   app.decorateRequest('currentUser', null)
 
@@ -209,7 +227,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.3.0' }))
+  app.get('/api/health', async () => ({ ok: true, version: '0.3.1' }))
 
   app.get('/api/bootstrap/status', async () => {
     const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }
@@ -375,6 +393,28 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { disk, assets: { count: assets.count, originalBytes: assets.bytes } }
   })
 
+  const resumableHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    reply.hijack()
+    await resumableUploads.server.handle(request.raw, reply.raw)
+  }
+  app.all('/api/uploads/resumable', resumableHandler)
+  app.all('/api/uploads/resumable/:uploadId', resumableHandler)
+
+  app.get(
+    '/api/uploads/resumable/:uploadId/result',
+    { preHandler: requireUser },
+    async (request, reply) => {
+      const { uploadId } = request.params as { uploadId: string }
+      const assetId = await resumableUploads.result(uploadId, request.currentUser!.id)
+      if (!assetId) return reply.code(404).send({ message: '上传结果不存在或尚未完成' })
+
+      const asset = findAsset(database, assetId)
+      if (!asset) return reply.code(404).send({ message: '照片记录不存在' })
+      await resumableUploads.clean(uploadId)
+      return { asset: serializeAsset(asset) }
+    },
+  )
+
   app.post('/api/assets', { preHandler: requireUser }, async (request, reply) => {
     const { visibility = 'SHARED' } = request.query as { visibility?: string }
     if (visibility !== 'SHARED' && visibility !== 'PRIVATE') {
@@ -393,93 +433,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return reply.code(413).send({ message: '文件超过 2 GB 限制' })
     }
 
-    const assetId = randomUUID()
-    const originalPath = moveOriginal(upload, request.currentUser!.id, assetId, config)
-    const originalFileId = randomUUID()
     const originalName = cleanOriginalName(part.filename)
-    const originalKind = upload.assetType === 'IMAGE' ? 'ORIGINAL_IMAGE' : 'ORIGINAL_VIDEO'
-    const uploadedAt = Date.now()
-
-    database.exec('BEGIN')
-    try {
-      database
-        .prepare(`
-          INSERT INTO assets (
-            id, owner_id, type, visibility, status, original_name, mime_type,
-            size_bytes, sha256, uploaded_at
-          ) VALUES (?, ?, ?, ?, 'PROCESSING', ?, ?, ?, ?, ?)
-        `)
-        .run(
-          assetId,
-          request.currentUser!.id,
-          upload.assetType,
-          visibility,
-          originalName,
-          upload.mimeType,
-          upload.sizeBytes,
-          upload.sha256,
-          uploadedAt,
-        )
-      database
-        .prepare(`
-          INSERT INTO asset_files (id, asset_id, kind, relative_path, mime_type, size_bytes)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `)
-        .run(
-          originalFileId,
-          assetId,
-          originalKind,
-          toRelativeStoragePath(config, originalPath),
-          upload.mimeType,
-          upload.sizeBytes,
-        )
-      database.exec('COMMIT')
-    } catch (error) {
-      database.exec('ROLLBACK')
-      throw error
-    }
-
-    try {
-      if (upload.assetType === 'IMAGE') {
-        const derivatives = await createImageDerivatives(originalPath, assetId, config)
-        const insertFile = database.prepare(`
-          INSERT INTO asset_files (id, asset_id, kind, relative_path, mime_type, size_bytes)
-          VALUES (?, ?, ?, ?, 'image/webp', ?)
-        `)
-        insertFile.run(
-          randomUUID(),
-          assetId,
-          'THUMBNAIL',
-          toRelativeStoragePath(config, derivatives.thumbnailPath),
-          fileSize(derivatives.thumbnailPath),
-        )
-        insertFile.run(
-          randomUUID(),
-          assetId,
-          'PREVIEW',
-          toRelativeStoragePath(config, derivatives.previewPath),
-          fileSize(derivatives.previewPath),
-        )
-        database
-          .prepare("UPDATE assets SET status = 'READY', width = ?, height = ? WHERE id = ?")
-          .run(derivatives.width, derivatives.height, assetId)
-      } else {
-        database.prepare("UPDATE assets SET status = 'READY' WHERE id = ?").run(assetId)
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message.slice(0, 500) : '媒体处理失败'
-      database
-        .prepare("UPDATE assets SET status = 'FAILED', processing_error = ? WHERE id = ?")
-        .run(message, assetId)
-    }
-
-    const created = database
-      .prepare(`
-        SELECT a.*, u.username AS owner_name,
-          ${assetFileColumns}
-        FROM assets a JOIN users u ON u.id = a.owner_id WHERE a.id = ?
-      `)
-      .get(assetId) as unknown as AssetRow
+    const assetId = await ingestSingleAsset({
+      database,
+      config,
+      userId: request.currentUser!.id,
+      visibility,
+      originalName,
+      upload,
+    })
+    const created = findAsset(database, assetId)!
 
     return reply.code(201).send({ asset: serializeAsset(created) })
   })

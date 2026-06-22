@@ -123,6 +123,126 @@ describe('MintGallery API', () => {
     expect(thumbnail.rawPayload.length).toBeGreaterThan(0)
   })
 
+  it('resumes an authenticated tus upload from the stored offset', async () => {
+    await app.listen({ host: '127.0.0.1', port: 0 })
+    const address = app.server.address()
+    if (!address || typeof address === 'string') throw new Error('test server did not bind a port')
+    const baseUrl = `http://127.0.0.1:${address.port}`
+
+    const bootstrap = await fetch(`${baseUrl}/api/bootstrap`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'owner', password: 'strong-password' }),
+    })
+    const cookie = bootstrap.headers.get('set-cookie')?.split(';')[0]
+    expect(cookie).toContain('mintgallery_session=')
+
+    const image = await sharp({
+      create: {
+        width: 32,
+        height: 24,
+        channels: 3,
+        background: { r: 82, g: 183, b: 136 },
+      },
+    })
+      .png()
+      .toBuffer()
+    const metadata = [
+      ['filename', 'resumed.png'],
+      ['filetype', 'image/png'],
+      ['visibility', 'PRIVATE'],
+    ]
+      .map(([key, value]) => `${key} ${Buffer.from(value).toString('base64')}`)
+      .join(',')
+
+    const unauthorized = await fetch(`${baseUrl}/api/uploads/resumable`, {
+      method: 'POST',
+      headers: {
+        'Tus-Resumable': '1.0.0',
+        'Upload-Length': String(image.length),
+        'Upload-Metadata': metadata,
+      },
+    })
+    expect(unauthorized.status).toBe(401)
+
+    const created = await fetch(`${baseUrl}/api/uploads/resumable`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie!,
+        'Tus-Resumable': '1.0.0',
+        'Upload-Length': String(image.length),
+        'Upload-Metadata': metadata,
+      },
+    })
+    expect(created.status).toBe(201)
+    const location = created.headers.get('location')
+    expect(location).toMatch(/^\/api\/uploads\/resumable\/[a-f0-9]{32}$/)
+    const uploadUrl = new URL(location!, baseUrl)
+
+    const splitAt = Math.floor(image.length / 2)
+    const firstChunk = await fetch(uploadUrl, {
+      method: 'PATCH',
+      headers: {
+        Cookie: cookie!,
+        'Tus-Resumable': '1.0.0',
+        'Upload-Offset': '0',
+        'Content-Type': 'application/offset+octet-stream',
+      },
+      body: image.subarray(0, splitAt),
+    })
+    expect(firstChunk.status).toBe(204)
+    expect(firstChunk.headers.get('upload-offset')).toBe(String(splitAt))
+
+    const memberCreated = await fetch(`${baseUrl}/api/users`, {
+      method: 'POST',
+      headers: { Cookie: cookie!, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'family', temporaryPassword: 'temporary-password' }),
+    })
+    expect(memberCreated.status).toBe(201)
+    const memberLogin = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'family', password: 'temporary-password' }),
+    })
+    const memberCookie = memberLogin.headers.get('set-cookie')?.split(';')[0]
+    const forbiddenOffset = await fetch(uploadUrl, {
+      method: 'HEAD',
+      headers: { Cookie: memberCookie!, 'Tus-Resumable': '1.0.0' },
+    })
+    expect(forbiddenOffset.status).toBe(403)
+
+    const offset = await fetch(uploadUrl, {
+      method: 'HEAD',
+      headers: { Cookie: cookie!, 'Tus-Resumable': '1.0.0' },
+    })
+    expect(offset.status).toBe(200)
+    expect(offset.headers.get('upload-offset')).toBe(String(splitAt))
+
+    const completed = await fetch(uploadUrl, {
+      method: 'PATCH',
+      headers: {
+        Cookie: cookie!,
+        'Tus-Resumable': '1.0.0',
+        'Upload-Offset': String(splitAt),
+        'Content-Type': 'application/offset+octet-stream',
+      },
+      body: image.subarray(splitAt),
+    })
+    expect(completed.status).toBe(204)
+
+    const uploadId = location!.split('/').at(-1)
+    const result = await fetch(`${baseUrl}/api/uploads/resumable/${uploadId}/result`, {
+      headers: { Cookie: cookie! },
+    })
+    expect(result.status).toBe(200)
+    expect((await result.json()).asset).toMatchObject({
+      originalName: 'resumed.png',
+      type: 'IMAGE',
+      visibility: 'PRIVATE',
+      status: 'READY',
+    })
+  })
+
   it('stores and serves a confirmed JPEG and MOV pair as one Live Photo', async () => {
     const bootstrap = await app.inject({
       method: 'POST',

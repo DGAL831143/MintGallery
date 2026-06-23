@@ -169,20 +169,20 @@ describe('MintGallery API', () => {
       payload,
     })
     const asset = upload.json().asset
-    expect(asset).toMatchObject({ visibility: 'SHARED', privacyMasked: false })
+    expect(asset).toMatchObject({ visibility: 'SHARED', privacyMasked: false, tags: [] })
 
     const masked = await app.inject({
       method: 'PATCH',
       url: `/api/assets/${asset.id}`,
       headers: { cookie: ownerCookie },
-      payload: { privacyMasked: true },
+      payload: { privacyMasked: true, tags: ['旅行', '猫片', '旅行'] },
     })
     expect(masked.statusCode).toBe(200)
-    expect(masked.json().asset).toMatchObject({ id: asset.id, privacyMasked: true })
+    expect(masked.json().asset).toMatchObject({ id: asset.id, privacyMasked: true, tags: ['旅行', '猫片'] })
 
     const search = await app.inject({
       method: 'GET',
-      url: '/api/assets?scope=SHARED&q=screen',
+      url: '/api/assets?scope=SHARED&q=猫片',
       headers: { cookie: memberCookie },
     })
     expect(search.json().assets).toHaveLength(1)
@@ -198,7 +198,7 @@ describe('MintGallery API', () => {
       method: 'PATCH',
       url: `/api/assets/${asset.id}`,
       headers: { cookie: memberCookie },
-      payload: { privacyMasked: false },
+      payload: { privacyMasked: false, tags: ['不该成功'] },
     })
     expect(forbiddenUpdate.statusCode).toBe(403)
 

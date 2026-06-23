@@ -10,6 +10,7 @@ function asset(id: string, shootingTime: string | null, uploadedAt: string): Ass
     type: 'IMAGE',
     visibility: 'PRIVATE',
     privacyMasked: false,
+    tags: [],
     status: 'READY',
     originalName: `${id}.jpg`,
     mimeType: 'image/jpeg',

@@ -14,6 +14,7 @@ export interface Asset {
   type: 'IMAGE' | 'VIDEO' | 'LIVE_PHOTO'
   visibility: 'SHARED' | 'PRIVATE'
   privacyMasked: boolean
+  tags: string[]
   status: 'PROCESSING' | 'READY' | 'FAILED'
   originalName: string
   mimeType: string

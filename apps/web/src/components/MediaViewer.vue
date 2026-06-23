@@ -12,6 +12,7 @@ import {
   LockKeyhole,
   Play,
   RotateCcw,
+  Tags,
   UsersRound,
   X,
 } from 'lucide-vue-next'
@@ -31,6 +32,8 @@ const infoOpen = ref(false)
 const privacyRevealed = ref(false)
 const saving = ref(false)
 const actionError = ref('')
+const tagEditing = ref(false)
+const tagInput = ref('')
 
 const isPrivacyHidden = computed(() => Boolean(asset.value?.privacyMasked && !privacyRevealed.value))
 const canManage = computed(() => Boolean(
@@ -43,6 +46,29 @@ const typeLabel = computed(() => {
 })
 const visibilityLabel = computed(() => asset.value?.visibility === 'SHARED' ? '家庭共享' : '仅自己可见')
 const privacyLabel = computed(() => asset.value?.privacyMasked ? '防窥遮挡' : '普通显示')
+const displayTitle = computed(() => {
+  if (!asset.value) return ''
+  return asset.value.tags.length > 0 ? asset.value.tags.join(' · ') : '未设置标签'
+})
+
+function cleanTagInput(value: string): string[] {
+  const seen = new Set<string>()
+  const tags: string[] = []
+  for (const rawTag of value.split(/[,，\n]/)) {
+    const tag = rawTag
+      .trim()
+      .normalize('NFC')
+      .replace(/[\u0000-\u001f]/g, '')
+      .replace(/\s+/g, ' ')
+      .slice(0, 24)
+    const key = tag.toLocaleLowerCase()
+    if (!tag || seen.has(key)) continue
+    seen.add(key)
+    tags.push(tag)
+    if (tags.length >= 10) break
+  }
+  return tags
+}
 
 async function playLive() {
   if (isPrivacyHidden.value) return
@@ -96,19 +122,37 @@ function revealPrivacy() {
   privacyRevealed.value = true
 }
 
-async function updateAsset(changes: { visibility?: 'SHARED' | 'PRIVATE'; privacyMasked?: boolean }) {
-  if (!asset.value || !canManage.value) return
+async function updateAsset(changes: { visibility?: 'SHARED' | 'PRIVATE'; privacyMasked?: boolean; tags?: string[] }): Promise<boolean> {
+  if (!asset.value || !canManage.value) return false
   saving.value = true
   actionError.value = ''
   try {
     const result = await galleryApi.updateAsset(asset.value.id, changes)
     if (changes.privacyMasked === true) privacyRevealed.value = false
     emit('updated', result.asset)
+    return true
   } catch (reason) {
     actionError.value = reason instanceof Error ? reason.message : '照片状态修改失败'
+    return false
   } finally {
     saving.value = false
   }
+}
+
+function startTagEdit() {
+  tagInput.value = asset.value?.tags.join('\n') ?? ''
+  tagEditing.value = true
+  actionError.value = ''
+}
+
+function cancelTagEdit() {
+  tagInput.value = asset.value?.tags.join('\n') ?? ''
+  tagEditing.value = false
+}
+
+async function saveTags() {
+  const ok = await updateAsset({ tags: cleanTagInput(tagInput.value) })
+  if (ok) tagEditing.value = false
 }
 
 function previous() {
@@ -136,14 +180,16 @@ watch(() => asset.value?.id, () => {
   resetLive()
   privacyRevealed.value = false
   actionError.value = ''
+  tagInput.value = asset.value?.tags.join('\n') ?? ''
+  tagEditing.value = false
 })
 </script>
 
 <template>
-  <div v-if="asset" class="viewer" role="dialog" aria-modal="true" :aria-label="asset.originalName">
+  <div v-if="asset" class="viewer" role="dialog" aria-modal="true" :aria-label="displayTitle">
     <header class="viewer-toolbar">
       <div class="viewer-title">
-        <strong>{{ asset.originalName }}</strong>
+        <strong>{{ displayTitle }}</strong>
         <span>{{ asset.ownerName }} · {{ formatDate(asset.uploadedAt) }}</span>
       </div>
       <a class="icon-button viewer-action" :href="asset.originalUrl" target="_blank" title="打开原始文件">
@@ -175,7 +221,7 @@ watch(() => asset.value?.id, () => {
         <img
           v-if="asset.previewUrl || asset.thumbnailUrl"
           :src="asset.previewUrl ?? asset.thumbnailUrl ?? ''"
-          :alt="asset.originalName"
+          :alt="displayTitle"
           draggable="false"
         />
         <div v-else class="viewer-privacy-placeholder">
@@ -195,7 +241,7 @@ watch(() => asset.value?.id, () => {
         @pointerup="stopLive"
         @pointercancel="stopLive"
       >
-        <img :src="asset.previewUrl" :alt="asset.originalName" draggable="false" />
+        <img :src="asset.previewUrl" :alt="displayTitle" draggable="false" />
         <video
           ref="liveVideo"
           :src="liveRequested ? asset.liveVideoUrl : undefined"
@@ -228,7 +274,7 @@ watch(() => asset.value?.id, () => {
       <img
         v-else-if="asset.type === 'IMAGE' && asset.previewUrl"
         :src="asset.previewUrl"
-        :alt="asset.originalName"
+        :alt="displayTitle"
         draggable="false"
       />
       <video v-else-if="asset.type === 'VIDEO'" :src="asset.originalUrl" controls playsinline preload="metadata"></video>
@@ -248,7 +294,15 @@ watch(() => asset.value?.id, () => {
         <button class="icon-button viewer-action" type="button" title="关闭信息" @click="infoOpen = false"><X :size="19" /></button>
       </header>
       <dl>
-        <div><dt>文件名</dt><dd>{{ asset.originalName }}</dd></div>
+        <div class="viewer-info-tags-row">
+          <dt>标签</dt>
+          <dd>
+            <div v-if="asset.tags.length > 0" class="viewer-tag-list">
+              <span v-for="tag in asset.tags" :key="tag" class="viewer-tag-chip"><Tags :size="13" />{{ tag }}</span>
+            </div>
+            <span v-else class="viewer-tag-empty">未设置标签</span>
+          </dd>
+        </div>
         <div><dt>类型</dt><dd>{{ typeLabel }}</dd></div>
         <div><dt>大小</dt><dd>{{ formatBytes(asset.sizeBytes) }}</dd></div>
         <div><dt>拍摄时间</dt><dd>{{ asset.shootingTime ? formatDate(asset.shootingTime) : '未读取' }}</dd></div>
@@ -257,7 +311,26 @@ watch(() => asset.value?.id, () => {
         <div><dt>可见范围</dt><dd>{{ visibilityLabel }}</dd></div>
         <div><dt>隐私遮挡</dt><dd>{{ privacyLabel }}</dd></div>
       </dl>
+      <form v-if="canManage && tagEditing" class="viewer-tag-editor" @submit.prevent="saveTags">
+        <label for="asset-tags-input">编辑标签</label>
+        <textarea
+          id="asset-tags-input"
+          v-model="tagInput"
+          rows="3"
+          placeholder="例如：旅行、家人、生日"
+          :disabled="saving"
+        ></textarea>
+        <span>用逗号或换行分隔，最多 10 个标签。</span>
+        <div>
+          <button class="button button-primary" type="submit" :disabled="saving">保存标签</button>
+          <button class="button button-secondary" type="button" :disabled="saving" @click="cancelTagEdit">取消</button>
+        </div>
+      </form>
       <div v-if="canManage" class="viewer-info-actions">
+        <button class="button button-secondary" type="button" :disabled="saving" @click="startTagEdit">
+          <Tags :size="17" />
+          设置标签
+        </button>
         <button class="button button-secondary" type="button" :disabled="saving" @click="updateAsset({ privacyMasked: !asset.privacyMasked })">
           <EyeOff v-if="!asset.privacyMasked" :size="17" />
           <Eye v-else :size="17" />

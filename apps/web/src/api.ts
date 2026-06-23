@@ -77,7 +77,7 @@ export const galleryApi = {
   },
   updateAsset: (
     id: string,
-    changes: { visibility?: 'SHARED' | 'PRIVATE'; privacyMasked?: boolean },
+    changes: { visibility?: 'SHARED' | 'PRIVATE'; privacyMasked?: boolean; tags?: string[] },
   ) =>
     api<{ asset: Asset }>(`/api/assets/${id}`, {
       method: 'PATCH',
@@ -85,7 +85,7 @@ export const galleryApi = {
     }),
   updateAssets: (
     assetIds: string[],
-    changes: { visibility?: 'SHARED' | 'PRIVATE'; privacyMasked?: boolean },
+    changes: { visibility?: 'SHARED' | 'PRIVATE'; privacyMasked?: boolean; tags?: string[] },
   ) =>
     api<{ assets: Asset[] }>('/api/assets', {
       method: 'PATCH',

@@ -1534,10 +1534,81 @@ input:focus-visible {
   font-weight: 750;
 }
 
+.viewer-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.viewer-tag-chip {
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #1f4f3a;
+  background: #e6f4ed;
+  border: 1px solid #c7e4d5;
+  border-radius: 5px;
+  font-size: 0.74rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.viewer-tag-empty {
+  color: #6b756f;
+  font-weight: 650;
+}
+
+.viewer-tag-editor {
+  margin: 0;
+  padding: 0 16px 14px;
+  display: grid;
+  gap: 7px;
+}
+
+.viewer-tag-editor label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.viewer-tag-editor textarea {
+  width: 100%;
+  min-height: 74px;
+  resize: vertical;
+  padding: 9px 10px;
+  color: var(--ink);
+  background: #f8fbf9;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.78rem;
+  outline: none;
+}
+
+.viewer-tag-editor textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(82, 183, 136, 0.18);
+}
+
+.viewer-tag-editor > span {
+  color: #6b756f;
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+.viewer-tag-editor > div {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
 .viewer-info-actions {
   padding: 0 16px 16px;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   gap: 8px;
 }
 

@@ -395,7 +395,7 @@ onMounted(() => {
             </div>
             <form class="gallery-search" role="search" @submit.prevent="load(true)">
               <Search :size="17" />
-              <input v-model="searchQuery" type="search" placeholder="搜索文件名、上传者、照片/视频/实况" aria-label="搜索照片" />
+              <input v-model="searchQuery" type="search" placeholder="搜索标签、上传者、照片/视频/实况" aria-label="搜索照片" />
               <button v-if="searchActive" type="button" title="清除搜索" @click="searchQuery = ''"><X :size="16" /></button>
             </form>
             <div class="segmented scope-switch" aria-label="相册范围">
@@ -412,7 +412,7 @@ onMounted(() => {
           <div v-else-if="assets.length === 0" class="gallery-state empty-state">
             <div class="empty-visual"><Images :size="44" /><Leaf :size="24" /></div>
             <strong>{{ searchActive ? '没有匹配的照片' : activeMonth ? '这个月没有照片' : activeFolder ? '这个文件夹还是空的' : scope === 'SHARED' ? '家庭相册还是空的' : '这里留给自己的照片' }}</strong>
-            <span>{{ searchActive ? '换个文件名、上传者或媒体类型再试。' : activeFolder ? '进入选择模式，将照片加入这个文件夹。' : '使用右上角的上传按钮添加第一批照片或视频。' }}</span>
+            <span>{{ searchActive ? '换个标签、上传者或媒体类型再试。' : activeFolder ? '进入选择模式，将照片加入这个文件夹。' : '使用右上角的上传按钮添加第一批照片或视频。' }}</span>
           </div>
 
           <div v-else-if="viewMode === 'TIMELINE'" class="timeline-view">

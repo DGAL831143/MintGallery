@@ -67,6 +67,7 @@ interface AssetRow {
   type: 'IMAGE' | 'VIDEO' | 'LIVE_PHOTO'
   visibility: 'SHARED' | 'PRIVATE'
   privacy_masked: number
+  tags: string
   status: 'PROCESSING' | 'READY' | 'FAILED'
   original_name: string
   mime_type: string
@@ -131,6 +132,45 @@ function cleanSearchQuery(value: unknown): string {
   return typeof value === 'string' ? value.trim().normalize('NFC').slice(0, 80) : ''
 }
 
+function cleanTag(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const tag = value
+    .trim()
+    .normalize('NFC')
+    .replace(/[\u0000-\u001f]/g, '')
+    .replace(/\s+/g, ' ')
+    .slice(0, 24)
+  return tag.length > 0 ? tag : ''
+}
+
+function cleanTags(value: unknown): string[] {
+  const rawTags = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(/[,，\n]/)
+      : []
+  const seen = new Set<string>()
+  const tags: string[] = []
+  for (const rawTag of rawTags) {
+    const tag = cleanTag(rawTag)
+    const key = tag.toLocaleLowerCase()
+    if (!tag || seen.has(key)) continue
+    seen.add(key)
+    tags.push(tag)
+    if (tags.length >= 10) break
+  }
+  return tags
+}
+
+function parseTags(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value)
+    return cleanTags(parsed)
+  } catch {
+    return []
+  }
+}
+
 function likePattern(value: string): string {
   return `%${value.replace(/[\\%_]/g, (match) => `\\${match}`)}%`
 }
@@ -157,10 +197,11 @@ function addSearchCondition(
   }
 
   const parts = [
+    "a.tags LIKE ? ESCAPE '\\'",
     "a.original_name LIKE ? ESCAPE '\\'",
     "u.username LIKE ? ESCAPE '\\'",
   ]
-  parameters.push(pattern, pattern)
+  parameters.push(pattern, pattern, pattern)
   if (typeMatches.length > 0) {
     parts.push(`a.type IN (${typeMatches.map(() => '?').join(', ')})`)
     parameters.push(...typeMatches)
@@ -227,6 +268,7 @@ function serializeAsset(row: AssetRow) {
     type: row.type,
     visibility: row.visibility,
     privacyMasked: row.privacy_masked === 1,
+    tags: parseTags(row.tags),
     status: row.status,
     originalName: row.original_name,
     mimeType: row.mime_type,
@@ -298,7 +340,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.7.0' }))
+  app.get('/api/health', async () => ({ ok: true, version: '0.7.1' }))
 
   app.get('/api/bootstrap/status', async () => {
     const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }
@@ -749,7 +791,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   app.patch('/api/assets/:id', { preHandler: requireUser }, async (request, reply) => {
     const { id } = request.params as { id: string }
-    const body = request.body as { visibility?: unknown; privacyMasked?: unknown } | undefined
+    const body = request.body as { visibility?: unknown; privacyMasked?: unknown; tags?: unknown } | undefined
     const existing = findAsset(database, id)
     if (!existing) return reply.code(404).send({ message: '照片不存在' })
     if (request.currentUser!.role !== 'ADMIN' && existing.owner_id !== request.currentUser!.id) {
@@ -770,6 +812,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       updates.push('privacy_masked = ?')
       parameters.push(body.privacyMasked ? 1 : 0)
     }
+    if (body && Object.prototype.hasOwnProperty.call(body, 'tags')) {
+      const tags = cleanTags(body.tags)
+      updates.push('tags = ?')
+      parameters.push(JSON.stringify(tags))
+    }
     if (updates.length === 0) return reply.code(400).send({ message: '没有需要修改的内容' })
 
     database.prepare(`UPDATE assets SET ${updates.join(', ')} WHERE id = ?`).run(...parameters, id)
@@ -782,6 +829,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       assetIds?: unknown
       visibility?: unknown
       privacyMasked?: unknown
+      tags?: unknown
     } | undefined
     const assetIds = cleanAssetIds(body?.assetIds)
     if (assetIds.length === 0) return reply.code(400).send({ message: '请选择需要修改的照片' })
@@ -799,6 +847,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
       updates.push('privacy_masked = ?')
       updateParameters.push(body.privacyMasked ? 1 : 0)
+    }
+    if (body && Object.prototype.hasOwnProperty.call(body, 'tags')) {
+      const tags = cleanTags(body.tags)
+      updates.push('tags = ?')
+      updateParameters.push(JSON.stringify(tags))
     }
     if (updates.length === 0) return reply.code(400).send({ message: '没有需要修改的内容' })
 

@@ -62,3 +62,72 @@ export interface StorageSummary {
     originalBytes: number
   }
 }
+
+export interface ImportDuplicateAsset {
+  id: string
+  originalName: string
+  type: 'IMAGE' | 'VIDEO' | 'LIVE_PHOTO'
+}
+
+export interface ImportCandidateFile {
+  role: 'PHOTO' | 'VIDEO' | 'MEDIA'
+  path: string
+  relativePath: string
+  name: string
+  mimeType: string
+  sizeBytes: number
+  sha256: string
+}
+
+export interface ImportCandidate {
+  id: string
+  type: 'IMAGE' | 'VIDEO' | 'LIVE_PHOTO'
+  originalName: string
+  mimeType: string
+  sizeBytes: number
+  sha256: string
+  duplicate: boolean
+  duplicateAssets: ImportDuplicateAsset[]
+  files: ImportCandidateFile[]
+  warnings: string[]
+}
+
+export interface ImportSkippedFile {
+  path: string
+  relativePath: string
+  reason: string
+}
+
+export interface ImportScanResult {
+  rootPath: string
+  candidates: ImportCandidate[]
+  skipped: ImportSkippedFile[]
+  summary: {
+    scannedFiles: number
+    candidates: number
+    newCandidates: number
+    duplicates: number
+    livePhotoCandidates: number
+    skipped: number
+    truncated: boolean
+  }
+}
+
+export interface ImportRunResult {
+  imported: Array<{
+    candidateId: string
+    assetId: string
+    type: 'IMAGE' | 'VIDEO' | 'LIVE_PHOTO'
+    originalName: string
+  }>
+  skipped: Array<{
+    candidateId: string
+    originalName: string
+    reason: string
+  }>
+  summary: {
+    requested: number
+    imported: number
+    skipped: number
+  }
+}

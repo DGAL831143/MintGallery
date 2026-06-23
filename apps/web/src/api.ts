@@ -1,4 +1,12 @@
-import type { Asset, Folder, StorageSummary, TimelineMonth, User } from './types'
+import type {
+  Asset,
+  Folder,
+  ImportRunResult,
+  ImportScanResult,
+  StorageSummary,
+  TimelineMonth,
+  User,
+} from './types'
 
 export class ApiError extends Error {
   constructor(
@@ -104,6 +112,21 @@ export const adminApi = {
     api<{ ok: boolean }>(`/api/users/${id}/status`, {
       method: 'PATCH',
       body: JSON.stringify({ status }),
+    }),
+  scanImportFolder: (path: string) =>
+    api<ImportScanResult>('/api/imports/folder/scan', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+  importFolder: (
+    path: string,
+    visibility: 'SHARED' | 'PRIVATE',
+    candidateIds: string[],
+    includeDuplicates: boolean,
+  ) =>
+    api<ImportRunResult>('/api/imports/folder/import', {
+      method: 'POST',
+      body: JSON.stringify({ path, visibility, candidateIds, includeDuplicates }),
     }),
 }
 

@@ -103,6 +103,10 @@ function receiveAsset(asset: Asset) {
   }
 }
 
+function receiveImportedAssets() {
+  void Promise.all([load(true), loadMonths(), loadFolders()])
+}
+
 function assetRatio(asset: Asset): string {
   if (!asset.width || !asset.height) return '4 / 3'
   const ratio = asset.width / asset.height
@@ -405,6 +409,6 @@ onMounted(() => {
       @add="addSelection"
     />
     <MediaViewer v-if="viewerIndex !== null" :assets="assets" :index="viewerIndex" @close="viewerIndex = null" @change="viewerIndex = $event" />
-    <AdminPanel v-if="adminOpen" :current-user-id="user.id" @close="adminOpen = false" />
+    <AdminPanel v-if="adminOpen" :current-user-id="user.id" @close="adminOpen = false" @imported="receiveImportedAssets" />
   </div>
 </template>

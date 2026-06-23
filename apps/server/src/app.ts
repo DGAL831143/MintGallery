@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import cookie from '@fastify/cookie'
@@ -20,26 +20,22 @@ import {
   verifyPassword,
   type SessionUser,
 } from './auth.js'
-import { ingestSingleAsset } from './asset-ingest.js'
+import { ingestLivePhotoAsset, ingestSingleAsset } from './asset-ingest.js'
 import { loadConfig, type AppConfig } from './config.js'
 import { openDatabase } from './db.js'
 import { createResumableUploads } from './resumable.js'
 import {
   backfillLivePhotoDerivatives,
-  createLivePhotoDerivative,
 } from './live-photo.js'
 import { backfillShootingTimes, extractShootingTime } from './metadata.js'
+import { importExternalFolderCandidates, scanExternalFolder } from './folder-import.js'
 import {
-  createImageDerivatives,
   createReadStream,
   discardTemporaryUpload,
   ensureStorageDirectories,
-  fileSize,
-  moveOriginal,
   receiveUpload,
   resolveStoragePath,
   storageStats,
-  toRelativeStoragePath,
   type SavedUpload,
 } from './storage.js'
 
@@ -250,7 +246,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.5.1' }))
+  app.get('/api/health', async () => ({ ok: true, version: '0.6.0' }))
 
   app.get('/api/bootstrap/status', async () => {
     const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }
@@ -414,6 +410,56 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       .prepare('SELECT COUNT(*) AS count, COALESCE(SUM(size_bytes), 0) AS bytes FROM assets')
       .get() as { count: number; bytes: number }
     return { disk, assets: { count: assets.count, originalBytes: assets.bytes } }
+  })
+
+  app.post('/api/imports/folder/scan', { preHandler: requireAdmin }, async (request, reply) => {
+    const body = request.body as { path?: unknown } | undefined
+    try {
+      return await scanExternalFolder({
+        database,
+        config,
+        directoryPath: body?.path,
+      })
+    } catch (error) {
+      return reply.code(400).send({
+        message: error instanceof Error ? error.message : '文件夹扫描失败',
+      })
+    }
+  })
+
+  app.post('/api/imports/folder/import', { preHandler: requireAdmin }, async (request, reply) => {
+    const body = request.body as {
+      path?: unknown
+      visibility?: unknown
+      candidateIds?: unknown
+      includeDuplicates?: unknown
+    } | undefined
+    const visibility = body?.visibility ?? 'SHARED'
+    if (visibility !== 'SHARED' && visibility !== 'PRIVATE') {
+      return reply.code(400).send({ message: '可见范围无效' })
+    }
+    if (storageStats(config).freeBytes < 512 * 1024 * 1024) {
+      return reply.code(507).send({ message: '磁盘剩余空间不足，已停止导入新文件' })
+    }
+
+    try {
+      return await importExternalFolderCandidates({
+        database,
+        config,
+        userId: request.currentUser!.id,
+        visibility,
+        directoryPath: body?.path,
+        candidateIds: body?.candidateIds,
+        includeDuplicates: body?.includeDuplicates === true,
+        onLivePreviewError: (assetId, error) => {
+          request.log.warn({ error, assetId }, 'Imported Live Photo web derivative failed')
+        },
+      })
+    } catch (error) {
+      return reply.code(400).send({
+        message: error instanceof Error ? error.message : '文件夹导入失败',
+      })
+    }
   })
 
   app.get('/api/folders', { preHandler: requireUser }, async (request) => {
@@ -624,92 +670,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       })
     }
 
-    const assetId = randomUUID()
-    const photoPath = moveOriginal(photo.upload, request.currentUser!.id, assetId, config)
-    const videoPath = moveOriginal(video.upload, request.currentUser!.id, assetId, config)
-    const uploadedAt = Date.now()
-    const shootingTime = await extractShootingTime(photoPath)
-    const combinedHash = createHash('sha256')
-      .update(photo.upload.sha256)
-      .update(video.upload.sha256)
-      .digest('hex')
-
-    database.exec('BEGIN')
-    try {
-      database
-        .prepare(`
-          INSERT INTO assets (
-            id, owner_id, type, visibility, status, original_name, mime_type,
-            size_bytes, sha256, shooting_time, uploaded_at
-          ) VALUES (?, ?, 'LIVE_PHOTO', ?, 'PROCESSING', ?, ?, ?, ?, ?, ?)
-        `)
-        .run(
-          assetId,
-          request.currentUser!.id,
-          visibility,
-          photo.originalName,
-          photo.upload.mimeType,
-          photo.upload.sizeBytes + video.upload.sizeBytes,
-          combinedHash,
-          shootingTime,
-          uploadedAt,
-        )
-      const insertFile = database.prepare(`
-        INSERT INTO asset_files (id, asset_id, kind, relative_path, mime_type, size_bytes)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `)
-      insertFile.run(
-        randomUUID(), assetId, 'ORIGINAL_IMAGE',
-        toRelativeStoragePath(config, photoPath), photo.upload.mimeType, photo.upload.sizeBytes,
-      )
-      insertFile.run(
-        randomUUID(), assetId, 'ORIGINAL_VIDEO',
-        toRelativeStoragePath(config, videoPath), video.upload.mimeType, video.upload.sizeBytes,
-      )
-      database.exec('COMMIT')
-    } catch (error) {
-      database.exec('ROLLBACK')
-      throw error
-    }
-
-    try {
-      const derivatives = await createImageDerivatives(photoPath, assetId, config)
-      const insertFile = database.prepare(`
-        INSERT INTO asset_files (id, asset_id, kind, relative_path, mime_type, size_bytes)
-        VALUES (?, ?, ?, ?, 'image/webp', ?)
-      `)
-      insertFile.run(
-        randomUUID(), assetId, 'THUMBNAIL',
-        toRelativeStoragePath(config, derivatives.thumbnailPath), fileSize(derivatives.thumbnailPath),
-      )
-      insertFile.run(
-        randomUUID(), assetId, 'PREVIEW',
-        toRelativeStoragePath(config, derivatives.previewPath), fileSize(derivatives.previewPath),
-      )
-      database
-        .prepare("UPDATE assets SET status = 'READY', width = ?, height = ? WHERE id = ?")
-        .run(derivatives.width, derivatives.height, assetId)
-    } catch (error) {
-      const message = error instanceof Error ? error.message.slice(0, 500) : '实况照片预览处理失败'
-      database
-        .prepare("UPDATE assets SET status = 'FAILED', processing_error = ? WHERE id = ?")
-        .run(message, assetId)
-    }
-
-    try {
-      const derivative = await createLivePhotoDerivative(videoPath, assetId, config)
-      database.prepare(`
-        INSERT INTO asset_files (id, asset_id, kind, relative_path, mime_type, size_bytes)
-        VALUES (?, ?, 'LIVE_PREVIEW', ?, 'video/mp4', ?)
-      `).run(
-        randomUUID(),
-        assetId,
-        toRelativeStoragePath(config, derivative.path),
-        derivative.sizeBytes,
-      )
-    } catch (error) {
-      request.log.warn({ error, assetId }, 'Live Photo web derivative failed')
-    }
+    const assetId = await ingestLivePhotoAsset({
+      database,
+      config,
+      userId: request.currentUser!.id,
+      visibility,
+      photoOriginalName: photo.originalName,
+      videoOriginalName: video.originalName,
+      photoUpload: photo.upload,
+      videoUpload: video.upload,
+      onLivePreviewError: (createdAssetId, error) => {
+        request.log.warn({ error, assetId: createdAssetId }, 'Live Photo web derivative failed')
+      },
+    })
 
     const created = database
       .prepare(`

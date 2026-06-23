@@ -113,6 +113,21 @@ export async function inspectStoredUpload(temporaryPath: string): Promise<SavedU
   }
 }
 
+export async function receiveLocalFile(
+  filePath: string,
+  config: AppConfig,
+): Promise<SavedUpload> {
+  const temporaryPath = path.join(config.temporaryDirectory, `${randomUUID()}.import`)
+
+  try {
+    await pipeline(createReadStream(filePath), createWriteStream(temporaryPath, { flags: 'wx' }))
+    return await inspectStoredUpload(temporaryPath)
+  } catch (error) {
+    rmSync(temporaryPath, { force: true })
+    throw error
+  }
+}
+
 export function moveOriginal(
   upload: SavedUpload,
   ownerId: string,

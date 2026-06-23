@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
@@ -528,6 +528,108 @@ describe('MintGallery API', () => {
 
     const gallery = await app.inject({ method: 'GET', url: '/api/assets', headers: { cookie } })
     expect(gallery.json().assets).toHaveLength(1)
+  })
+
+  it('scans an external folder, imports selected files, and detects duplicates', async () => {
+    const sourceDirectory = mkdtempSync(path.join(tmpdir(), 'mintgallery-import-source-'))
+    try {
+      const bootstrap = await app.inject({
+        method: 'POST',
+        url: '/api/bootstrap',
+        payload: { username: 'owner', password: 'strong-password' },
+      })
+      const cookie = bootstrap.headers['set-cookie']?.split(';')[0]
+      const single = await sharp({
+        create: { width: 10, height: 10, channels: 3, background: '#52b788' },
+      }).png().toBuffer()
+      const liveStill = await sharp({
+        create: { width: 12, height: 8, channels: 3, background: '#2d6a4f' },
+      }).jpeg().toBuffer()
+      const liveVideo = Buffer.concat([
+        Buffer.from([0, 0, 0, 20]),
+        Buffer.from('ftyp'),
+        Buffer.from('qt  '),
+        Buffer.from([0, 0, 0, 0]),
+        Buffer.from('qt  '),
+      ])
+      const singlePath = path.join(sourceDirectory, 'single.png')
+      const liveStillPath = path.join(sourceDirectory, 'IMG_3001.JPG')
+      const liveVideoPath = path.join(sourceDirectory, 'IMG_3001.MOV')
+      writeFileSync(singlePath, single)
+      writeFileSync(liveStillPath, liveStill)
+      writeFileSync(liveVideoPath, liveVideo)
+
+      const scan = await app.inject({
+        method: 'POST',
+        url: '/api/imports/folder/scan',
+        headers: { cookie },
+        payload: { path: sourceDirectory },
+      })
+      expect(scan.statusCode).toBe(200)
+      expect(scan.json().summary).toMatchObject({
+        candidates: 2,
+        newCandidates: 2,
+        duplicates: 0,
+        livePhotoCandidates: 1,
+      })
+      const candidates = scan.json().candidates as Array<{
+        id: string
+        type: string
+        originalName: string
+        duplicate: boolean
+      }>
+      expect(candidates.map((candidate) => candidate.type).sort()).toEqual(['IMAGE', 'LIVE_PHOTO'])
+
+      const imported = await app.inject({
+        method: 'POST',
+        url: '/api/imports/folder/import',
+        headers: { cookie },
+        payload: {
+          path: sourceDirectory,
+          visibility: 'PRIVATE',
+          candidateIds: candidates.map((candidate) => candidate.id),
+          includeDuplicates: false,
+        },
+      })
+      expect(imported.statusCode).toBe(200)
+      expect(imported.json().summary).toEqual({ requested: 2, imported: 2, skipped: 0 })
+      expect(existsSync(singlePath)).toBe(true)
+      expect(existsSync(liveStillPath)).toBe(true)
+      expect(existsSync(liveVideoPath)).toBe(true)
+
+      const gallery = await app.inject({
+        method: 'GET',
+        url: '/api/assets?scope=PRIVATE',
+        headers: { cookie },
+      })
+      expect(gallery.json().assets.map((asset: { type: string }) => asset.type).sort()).toEqual([
+        'IMAGE',
+        'LIVE_PHOTO',
+      ])
+
+      const duplicateScan = await app.inject({
+        method: 'POST',
+        url: '/api/imports/folder/scan',
+        headers: { cookie },
+        payload: { path: sourceDirectory },
+      })
+      expect(duplicateScan.json().summary.duplicates).toBe(2)
+
+      const duplicateImport = await app.inject({
+        method: 'POST',
+        url: '/api/imports/folder/import',
+        headers: { cookie },
+        payload: {
+          path: sourceDirectory,
+          visibility: 'PRIVATE',
+          candidateIds: (duplicateScan.json().candidates as Array<{ id: string }>).map((candidate) => candidate.id),
+          includeDuplicates: false,
+        },
+      })
+      expect(duplicateImport.json().summary).toEqual({ requested: 2, imported: 0, skipped: 2 })
+    } finally {
+      rmSync(sourceDirectory, { recursive: true, force: true })
+    }
   })
 
   it('rejects weak bootstrap credentials', async () => {

@@ -1,6 +1,6 @@
 # MintGallery
 
-MintGallery 是一个本地优先的私密家庭相册。当前版本支持管理员初始化、家庭成员账号、普通照片与视频上传、手动配对 Live Photo、按拍摄时间浏览、共享/私密图片墙、个人文件夹和受保护的媒体访问。
+MintGallery 是一个本地优先的私密家庭相册。当前版本支持管理员初始化、家庭成员账号、普通照片与视频上传、手动配对 Live Photo、按拍摄时间浏览、共享/私密图片墙、个人文件夹、受保护的媒体访问，以及 Tailscale 私有访问的自动启动与健康检查。
 
 ## 运行环境
 
@@ -61,7 +61,20 @@ tailscale serve status
   -NodePath 'F:\nodejs\node.exe'
 ```
 
-运行日志保存在 `F:\MintGallery\logs\scheduled-server.log`。
+安装脚本会注册两个任务：
+
+- `MintGallery`：开机和登录时启动生产服务；如果 Node 进程退出，运行脚本会自动拉起。
+- `MintGallery HealthCheck`：每 3 分钟检查 `http://127.0.0.1:3000/api/health` 和 Tailscale Serve 代理；发现服务不可用时会重启任务，发现 Serve 配置漂移时会恢复到 `127.0.0.1:3000`。
+
+运行日志保存在 `F:\MintGallery\logs\scheduled-server.log`，健康检查日志保存在 `F:\MintGallery\logs\health-check.log`。需要手动诊断时可运行：
+
+```powershell
+.\scripts\ensure-private-service.ps1 `
+  -DataDirectory 'F:\MintGallery\data' `
+  -NodePath 'F:\nodejs\node.exe' `
+  -ReportOnly `
+  -Json
+```
 
 ## GitHub Pages 静态预览
 
@@ -165,6 +178,7 @@ npm run start -w @mintgallery/server
 - Live Photo 已支持手动选择同名图片与 MOV 配对上传；暂不支持从 iPhone 相册自动提取双文件。
 - 已支持拍摄时间提取、按月时间轴、月份筛选和桌面/手机响应式浏览；缺少拍摄时间时使用上传时间。
 - 个人文件夹支持批量加入、移出和筛选；外部磁盘文件夹扫描导入将在后续版本实现。
+- Windows 生产部署支持开机/登录启动、Node 退出自动拉起、周期健康检查和 Tailscale Serve 配置自愈；电脑关机、休眠、断网或 Tailscale 客户端离线时仍无法访问。
 - 当前默认只有本地硬盘一个副本。界面显示“仅 1 个副本”时，请勿删除手机中的唯一原件。
 
 详细产品范围见 [prd.md](./prd.md)。

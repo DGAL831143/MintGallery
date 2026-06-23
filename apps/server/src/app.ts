@@ -250,7 +250,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.5.0' }))
+  app.get('/api/health', async () => ({ ok: true, version: '0.5.1' }))
 
   app.get('/api/bootstrap/status', async () => {
     const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }

@@ -9,7 +9,10 @@ param(
   [ValidateRange(1, 65535)]
   [int]$Port = 3000,
 
-  [string]$LogDirectory
+  [string]$LogDirectory,
+
+  [ValidateRange(1, 3600)]
+  [int]$RestartDelaySeconds = 5
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,16 +41,31 @@ if (-not $LogDirectory) {
 $logRoot = [IO.Path]::GetFullPath($LogDirectory)
 New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
+$serverLog = Join-Path $logRoot 'scheduled-server.log'
+
+function Write-ServerLog {
+  param([Parameter(Mandatory = $true)][string]$Message)
+  $timestamp = Get-Date -Format o
+  Add-Content -LiteralPath $serverLog -Value "[$timestamp] $Message"
+}
 
 $env:MINTGALLERY_DATA_DIR = $dataRoot
 $env:MINTGALLERY_HOST = '127.0.0.1'
 $env:MINTGALLERY_PORT = [string]$Port
 $env:MINTGALLERY_COOKIE_SECURE = 'true'
+$env:NODE_ENV = 'production'
 
 Push-Location $projectRoot
 try {
-  & $nodeExecutable $serverEntry *>> (Join-Path $logRoot 'scheduled-server.log')
-  exit $LASTEXITCODE
+  Write-ServerLog "Runner started. project=$projectRoot data=$dataRoot port=$Port node=$nodeExecutable"
+  while ($true) {
+    Write-ServerLog "Starting MintGallery server."
+    & $nodeExecutable $serverEntry *>> $serverLog
+    $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+    Write-ServerLog "MintGallery server exited with code $exitCode. Restarting in $RestartDelaySeconds seconds."
+    Start-Sleep -Seconds $RestartDelaySeconds
+  }
 } finally {
+  Write-ServerLog 'Runner stopped.'
   Pop-Location
 }

@@ -9,6 +9,7 @@ function asset(id: string, shootingTime: string | null, uploadedAt: string): Ass
     ownerName: 'owner',
     type: 'IMAGE',
     visibility: 'PRIVATE',
+    privacyMasked: false,
     status: 'READY',
     originalName: `${id}.jpg`,
     mimeType: 'image/jpeg',

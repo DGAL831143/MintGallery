@@ -9,6 +9,7 @@ const livePhoto: Asset = {
   ownerName: 'family',
   type: 'LIVE_PHOTO',
   visibility: 'SHARED',
+  privacyMasked: false,
   status: 'READY',
   originalName: 'IMG_5863.jpg',
   mimeType: 'image/jpeg',
@@ -31,7 +32,7 @@ describe('MediaViewer', () => {
   it('does not render the fallback alongside a playable Live Photo', () => {
     const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
     const wrapper = mount(MediaViewer, {
-      props: { assets: [livePhoto], index: 0 },
+      props: { assets: [livePhoto], index: 0, currentUser: { id: 'user-1', username: 'family', role: 'MEMBER', status: 'ACTIVE', mustChangePassword: false } },
     })
 
     expect(wrapper.find('.live-photo-player').exists()).toBe(true)
@@ -45,7 +46,7 @@ describe('MediaViewer', () => {
     const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
     const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
     const wrapper = mount(MediaViewer, {
-      props: { assets: [livePhoto], index: 0 },
+      props: { assets: [livePhoto], index: 0, currentUser: { id: 'user-1', username: 'family', role: 'MEMBER', status: 'ACTIVE', mustChangePassword: false } },
     })
 
     expect(wrapper.find('video').attributes('src')).toBeUndefined()
@@ -55,6 +56,23 @@ describe('MediaViewer', () => {
 
     wrapper.unmount()
     play.mockRestore()
+    pause.mockRestore()
+  })
+
+  it('requires an explicit reveal before showing a masked photo', async () => {
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    const masked = { ...livePhoto, privacyMasked: true }
+    const wrapper = mount(MediaViewer, {
+      props: { assets: [masked], index: 0, currentUser: { id: 'user-1', username: 'family', role: 'MEMBER', status: 'ACTIVE', mustChangePassword: false } },
+    })
+
+    expect(wrapper.find('.viewer-privacy-cover').exists()).toBe(true)
+    expect(wrapper.find('.live-photo-player').exists()).toBe(false)
+    await wrapper.find('.privacy-reveal-button').trigger('click')
+    expect(wrapper.find('.viewer-privacy-cover').exists()).toBe(false)
+    expect(wrapper.find('.live-photo-player').exists()).toBe(true)
+
+    wrapper.unmount()
     pause.mockRestore()
   })
 })

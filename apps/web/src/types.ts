@@ -13,6 +13,7 @@ export interface Asset {
   ownerName: string
   type: 'IMAGE' | 'VIDEO' | 'LIVE_PHOTO'
   visibility: 'SHARED' | 'PRIVATE'
+  privacyMasked: boolean
   status: 'PROCESSING' | 'READY' | 'FAILED'
   originalName: string
   mimeType: string

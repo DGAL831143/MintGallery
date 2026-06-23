@@ -1,6 +1,6 @@
 {
   "name": "mintgallery",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "A private, local-first family gallery.",
   "workspaces": [

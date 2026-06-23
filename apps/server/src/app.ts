@@ -66,6 +66,7 @@ interface AssetRow {
   owner_name: string
   type: 'IMAGE' | 'VIDEO' | 'LIVE_PHOTO'
   visibility: 'SHARED' | 'PRIVATE'
+  privacy_masked: number
   status: 'PROCESSING' | 'READY' | 'FAILED'
   original_name: string
   mime_type: string
@@ -122,6 +123,56 @@ function cleanFolderName(value: unknown): string {
   return name.length <= 40 && !/[\u0000-\u001f]/.test(name) ? name : ''
 }
 
+function validVisibility(value: unknown): value is 'SHARED' | 'PRIVATE' {
+  return value === 'SHARED' || value === 'PRIVATE'
+}
+
+function cleanSearchQuery(value: unknown): string {
+  return typeof value === 'string' ? value.trim().normalize('NFC').slice(0, 80) : ''
+}
+
+function likePattern(value: string): string {
+  return `%${value.replace(/[\\%_]/g, (match) => `\\${match}`)}%`
+}
+
+function addSearchCondition(
+  conditions: string[],
+  parameters: Array<string | number>,
+  rawQuery: unknown,
+): void {
+  const query = cleanSearchQuery(rawQuery)
+  if (!query) return
+
+  const pattern = likePattern(query)
+  const normalized = query.toLocaleLowerCase()
+  const typeMatches: Array<AssetRow['type']> = []
+  if (['image', 'photo', '照片', '图片'].some((term) => normalized.includes(term))) {
+    typeMatches.push('IMAGE')
+  }
+  if (['video', '视频'].some((term) => normalized.includes(term))) {
+    typeMatches.push('VIDEO')
+  }
+  if (['live', '实况', 'live photo'].some((term) => normalized.includes(term))) {
+    typeMatches.push('LIVE_PHOTO')
+  }
+
+  const parts = [
+    "a.original_name LIKE ? ESCAPE '\\'",
+    "u.username LIKE ? ESCAPE '\\'",
+  ]
+  parameters.push(pattern, pattern)
+  if (typeMatches.length > 0) {
+    parts.push(`a.type IN (${typeMatches.map(() => '?').join(', ')})`)
+    parameters.push(...typeMatches)
+  }
+  conditions.push(`(${parts.join(' OR ')})`)
+}
+
+function cleanAssetIds(value: unknown, max = 100): string[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.filter((id): id is string => typeof id === 'string' && id.length > 0))].slice(0, max)
+}
+
 const assetFileColumns = `
   (SELECT id FROM asset_files
     WHERE asset_id = a.id
@@ -175,6 +226,7 @@ function serializeAsset(row: AssetRow) {
     ownerName: row.owner_name,
     type: row.type,
     visibility: row.visibility,
+    privacyMasked: row.privacy_masked === 1,
     status: row.status,
     originalName: row.original_name,
     mimeType: row.mime_type,
@@ -246,7 +298,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.6.0' }))
+  app.get('/api/health', async () => ({ ok: true, version: '0.7.0' }))
 
   app.get('/api/bootstrap/status', async () => {
     const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }
@@ -695,6 +747,87 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return reply.code(201).send({ asset: serializeAsset(created) })
   })
 
+  app.patch('/api/assets/:id', { preHandler: requireUser }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = request.body as { visibility?: unknown; privacyMasked?: unknown } | undefined
+    const existing = findAsset(database, id)
+    if (!existing) return reply.code(404).send({ message: '照片不存在' })
+    if (request.currentUser!.role !== 'ADMIN' && existing.owner_id !== request.currentUser!.id) {
+      return reply.code(403).send({ message: '只能修改自己上传的照片' })
+    }
+
+    const updates: string[] = []
+    const parameters: Array<string | number> = []
+    if (body && Object.prototype.hasOwnProperty.call(body, 'visibility')) {
+      if (!validVisibility(body.visibility)) return reply.code(400).send({ message: '可见范围无效' })
+      updates.push('visibility = ?')
+      parameters.push(body.visibility)
+    }
+    if (body && Object.prototype.hasOwnProperty.call(body, 'privacyMasked')) {
+      if (typeof body.privacyMasked !== 'boolean') {
+        return reply.code(400).send({ message: '隐私遮挡状态无效' })
+      }
+      updates.push('privacy_masked = ?')
+      parameters.push(body.privacyMasked ? 1 : 0)
+    }
+    if (updates.length === 0) return reply.code(400).send({ message: '没有需要修改的内容' })
+
+    database.prepare(`UPDATE assets SET ${updates.join(', ')} WHERE id = ?`).run(...parameters, id)
+    const updated = findAsset(database, id)!
+    return { asset: serializeAsset(updated) }
+  })
+
+  app.patch('/api/assets', { preHandler: requireUser }, async (request, reply) => {
+    const body = request.body as {
+      assetIds?: unknown
+      visibility?: unknown
+      privacyMasked?: unknown
+    } | undefined
+    const assetIds = cleanAssetIds(body?.assetIds)
+    if (assetIds.length === 0) return reply.code(400).send({ message: '请选择需要修改的照片' })
+
+    const updates: string[] = []
+    const updateParameters: Array<string | number> = []
+    if (body && Object.prototype.hasOwnProperty.call(body, 'visibility')) {
+      if (!validVisibility(body.visibility)) return reply.code(400).send({ message: '可见范围无效' })
+      updates.push('visibility = ?')
+      updateParameters.push(body.visibility)
+    }
+    if (body && Object.prototype.hasOwnProperty.call(body, 'privacyMasked')) {
+      if (typeof body.privacyMasked !== 'boolean') {
+        return reply.code(400).send({ message: '隐私遮挡状态无效' })
+      }
+      updates.push('privacy_masked = ?')
+      updateParameters.push(body.privacyMasked ? 1 : 0)
+    }
+    if (updates.length === 0) return reply.code(400).send({ message: '没有需要修改的内容' })
+
+    const placeholders = assetIds.map(() => '?').join(', ')
+    const ownerGuard = request.currentUser!.role === 'ADMIN' ? '' : ' AND owner_id = ?'
+    const ownedParameters = request.currentUser!.role === 'ADMIN'
+      ? assetIds
+      : [...assetIds, request.currentUser!.id]
+    const rows = database
+      .prepare(`SELECT id FROM assets WHERE id IN (${placeholders})${ownerGuard}`)
+      .all(...ownedParameters) as Array<{ id: string }>
+    if (rows.length !== assetIds.length) {
+      return reply.code(403).send({ message: '只能修改自己上传的照片' })
+    }
+
+    database.prepare(`UPDATE assets SET ${updates.join(', ')} WHERE id IN (${placeholders})`)
+      .run(...updateParameters, ...assetIds)
+    const updatedRows = database.prepare(`
+      SELECT a.*, COALESCE(a.shooting_time, a.uploaded_at) AS sort_time,
+        u.username AS owner_name,
+        ${assetFileColumns}
+      FROM assets a
+      JOIN users u ON u.id = a.owner_id
+      WHERE a.id IN (${placeholders})
+      ORDER BY sort_time DESC, a.id DESC
+    `).all(...assetIds) as unknown as AssetRow[]
+    return { assets: updatedRows.map(serializeAsset) }
+  })
+
   app.get('/api/assets', { preHandler: requireUser }, async (request, reply) => {
     const query = request.query as {
       scope?: string
@@ -702,6 +835,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       limit?: string
       folderId?: string
       month?: string
+      q?: string
     }
     const scope = query.scope ?? 'SHARED'
     if (scope !== 'SHARED' && scope !== 'PRIVATE') {
@@ -746,6 +880,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       conditions.push('COALESCE(a.shooting_time, a.uploaded_at) < ?')
       parameters.push(start, end)
     }
+    addSearchCondition(conditions, parameters, query.q)
     if (cursor) {
       conditions.push(`(
         COALESCE(a.shooting_time, a.uploaded_at) < ? OR
@@ -779,7 +914,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   })
 
   app.get('/api/timeline/months', { preHandler: requireUser }, async (request, reply) => {
-    const query = request.query as { scope?: string; folderId?: string }
+    const query = request.query as { scope?: string; folderId?: string; q?: string }
     const scope = query.scope ?? 'SHARED'
     if (scope !== 'SHARED' && scope !== 'PRIVATE') {
       return reply.code(400).send({ message: '相册范围无效' })
@@ -787,7 +922,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const conditions = scope === 'SHARED'
       ? ["a.visibility = 'SHARED'"]
       : ["a.visibility = 'PRIVATE'", 'a.owner_id = ?']
-    const parameters: Array<string> = scope === 'PRIVATE' ? [request.currentUser!.id] : []
+    const parameters: Array<string | number> = scope === 'PRIVATE' ? [request.currentUser!.id] : []
     if (query.folderId) {
       const folder = database.prepare('SELECT id FROM folders WHERE id = ? AND owner_id = ?')
         .get(query.folderId, request.currentUser!.id)
@@ -797,6 +932,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       )`)
       parameters.push(query.folderId)
     }
+    addSearchCondition(conditions, parameters, query.q)
 
     const rows = database.prepare(`
       SELECT
@@ -806,6 +942,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         ) AS month,
         COUNT(*) AS count
       FROM assets a
+      JOIN users u ON u.id = a.owner_id
       WHERE ${conditions.join(' AND ')}
       GROUP BY month
       ORDER BY month DESC

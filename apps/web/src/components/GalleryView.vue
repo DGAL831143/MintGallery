@@ -3,6 +3,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   CalendarDays,
   CircleAlert,
+  Eye,
+  EyeOff,
   Folder,
   FolderInput,
   FolderMinus,
@@ -12,11 +14,14 @@ import {
   Leaf,
   ListChecks,
   LoaderCircle,
+  LockKeyhole,
   LogOut,
+  Search,
   Settings,
   ShieldAlert,
   Trash2,
   UserRound,
+  UsersRound,
   X,
 } from 'lucide-vue-next'
 import { authApi, folderApi, galleryApi, timelineApi } from '../api'
@@ -38,6 +43,7 @@ const months = ref<TimelineMonth[]>([])
 const activeFolderId = ref<string | null>(null)
 const activeMonth = ref<string | null>(null)
 const cursor = ref<string | null>(null)
+const searchQuery = ref('')
 const loading = ref(true)
 const loadingMore = ref(false)
 const error = ref('')
@@ -48,12 +54,14 @@ const selectedIds = ref(new Set<string>())
 const folderDialogOpen = ref(false)
 const folderBusy = ref(false)
 const folderError = ref('')
+const assetUpdateBusy = ref(false)
 
 const activeFolder = computed(() => folders.value.find((folder) => folder.id === activeFolderId.value) ?? null)
 const selectedCount = computed(() => selectedIds.value.size)
 const timelineGroups = computed(() => groupTimelineAssets(assets.value))
 const scopeTitle = computed(() => activeFolder.value?.name ?? (scope.value === 'SHARED' ? '家庭共享' : '仅自己可见'))
 const galleryTitle = computed(() => activeMonth.value ? formatMonth(activeMonth.value) : scopeTitle.value)
+const searchActive = computed(() => searchQuery.value.trim().length > 0)
 
 async function load(reset = true) {
   if (reset) {
@@ -70,6 +78,7 @@ async function load(reset = true) {
       reset ? null : cursor.value,
       activeFolderId.value,
       activeMonth.value,
+      searchQuery.value,
     )
     assets.value = reset ? result.assets : [...assets.value, ...result.assets]
     cursor.value = result.nextCursor
@@ -91,7 +100,7 @@ async function loadFolders() {
 
 async function loadMonths() {
   try {
-    months.value = (await timelineApi.months(scope.value, activeFolderId.value)).months
+    months.value = (await timelineApi.months(scope.value, activeFolderId.value, searchQuery.value)).months
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '时间轴加载失败'
   }
@@ -105,6 +114,11 @@ function receiveAsset(asset: Asset) {
 
 function receiveImportedAssets() {
   void Promise.all([load(true), loadMonths(), loadFolders()])
+}
+
+function mergeAssets(updatedAssets: Asset[]) {
+  const byId = new Map(updatedAssets.map((asset) => [asset.id, asset]))
+  assets.value = assets.value.map((asset) => byId.get(asset.id) ?? asset)
 }
 
 function assetRatio(asset: Asset): string {
@@ -207,6 +221,45 @@ async function removeSelection() {
   }
 }
 
+async function updateSelection(changes: { visibility?: 'SHARED' | 'PRIVATE'; privacyMasked?: boolean }) {
+  if (selectedIds.value.size === 0) return
+  assetUpdateBusy.value = true
+  try {
+    const result = await galleryApi.updateAssets([...selectedIds.value], changes)
+    const movedOutOfScope = Boolean(changes.visibility && changes.visibility !== scope.value)
+    leaveSelection()
+    if (movedOutOfScope) {
+      await Promise.all([load(true), loadMonths(), loadFolders()])
+    } else {
+      mergeAssets(result.assets)
+      await loadMonths()
+    }
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '照片状态修改失败'
+  } finally {
+    assetUpdateBusy.value = false
+  }
+}
+
+function updateSelectedPrivacy(privacyMasked: boolean) {
+  void updateSelection({ privacyMasked })
+}
+
+function updateSelectedVisibility(visibility: 'SHARED' | 'PRIVATE') {
+  void updateSelection({ visibility })
+}
+
+function handleViewerUpdated(updatedAsset: Asset) {
+  if (updatedAsset.visibility !== scope.value) {
+    viewerIndex.value = null
+    assets.value = assets.value.filter((asset) => asset.id !== updatedAsset.id)
+    void Promise.all([loadMonths(), loadFolders()])
+    return
+  }
+  mergeAssets([updatedAsset])
+  void loadMonths()
+}
+
 async function deleteActiveFolder() {
   if (!activeFolder.value) return
   if (!window.confirm(`删除文件夹“${activeFolder.value.name}”？照片原件不会被删除。`)) return
@@ -233,6 +286,10 @@ watch([scope, activeFolderId], () => {
 watch(activeMonth, () => {
   leaveSelection()
   void load(true)
+})
+watch(searchQuery, () => {
+  leaveSelection()
+  void Promise.all([load(true), loadMonths()])
 })
 onMounted(() => {
   void Promise.all([load(true), loadFolders(), loadMonths()])
@@ -336,6 +393,11 @@ onMounted(() => {
               </div>
               <button v-if="activeFolder" class="icon-button" type="button" title="删除文件夹" @click="deleteActiveFolder"><Trash2 :size="19" /></button>
             </div>
+            <form class="gallery-search" role="search" @submit.prevent="load(true)">
+              <Search :size="17" />
+              <input v-model="searchQuery" type="search" placeholder="搜索文件名、上传者、照片/视频/实况" aria-label="搜索照片" />
+              <button v-if="searchActive" type="button" title="清除搜索" @click="searchQuery = ''"><X :size="16" /></button>
+            </form>
             <div class="segmented scope-switch" aria-label="相册范围">
               <button :class="{ active: scope === 'SHARED' }" @click="scope = 'SHARED'">家庭共享</button>
               <button :class="{ active: scope === 'PRIVATE' }" @click="scope = 'PRIVATE'">仅自己</button>
@@ -349,8 +411,8 @@ onMounted(() => {
           </div>
           <div v-else-if="assets.length === 0" class="gallery-state empty-state">
             <div class="empty-visual"><Images :size="44" /><Leaf :size="24" /></div>
-            <strong>{{ activeMonth ? '这个月没有照片' : activeFolder ? '这个文件夹还是空的' : scope === 'SHARED' ? '家庭相册还是空的' : '这里留给自己的照片' }}</strong>
-            <span>{{ activeFolder ? '进入选择模式，将照片加入这个文件夹。' : '使用右上角的上传按钮添加第一批照片或视频。' }}</span>
+            <strong>{{ searchActive ? '没有匹配的照片' : activeMonth ? '这个月没有照片' : activeFolder ? '这个文件夹还是空的' : scope === 'SHARED' ? '家庭相册还是空的' : '这里留给自己的照片' }}</strong>
+            <span>{{ searchActive ? '换个文件名、上传者或媒体类型再试。' : activeFolder ? '进入选择模式，将照片加入这个文件夹。' : '使用右上角的上传按钮添加第一批照片或视频。' }}</span>
           </div>
 
           <div v-else-if="viewMode === 'TIMELINE'" class="timeline-view">
@@ -395,6 +457,10 @@ onMounted(() => {
       <strong>{{ selectedCount }} 个已选择</strong>
       <button class="button button-primary" type="button" :disabled="selectedCount === 0" @click="openFolderDialog"><FolderInput :size="18" />加入文件夹</button>
       <button v-if="activeFolder" class="button button-secondary" type="button" :disabled="selectedCount === 0 || folderBusy" @click="removeSelection"><FolderMinus :size="18" />移出</button>
+      <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="updateSelectedPrivacy(true)"><EyeOff :size="18" />设为防窥</button>
+      <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="updateSelectedPrivacy(false)"><Eye :size="18" />取消防窥</button>
+      <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="updateSelectedVisibility('PRIVATE')"><LockKeyhole :size="18" />仅自己</button>
+      <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="updateSelectedVisibility('SHARED')"><UsersRound :size="18" />家庭共享</button>
       <button class="icon-button" type="button" title="取消选择" @click="leaveSelection"><X :size="20" /></button>
     </div>
 
@@ -408,7 +474,15 @@ onMounted(() => {
       @create="createFolder"
       @add="addSelection"
     />
-    <MediaViewer v-if="viewerIndex !== null" :assets="assets" :index="viewerIndex" @close="viewerIndex = null" @change="viewerIndex = $event" />
+    <MediaViewer
+      v-if="viewerIndex !== null"
+      :assets="assets"
+      :index="viewerIndex"
+      :current-user="user"
+      @close="viewerIndex = null"
+      @change="viewerIndex = $event"
+      @updated="handleViewerUpdated"
+    />
     <AdminPanel v-if="adminOpen" :current-user-id="user.id" @close="adminOpen = false" @imported="receiveImportedAssets" />
   </div>
 </template>

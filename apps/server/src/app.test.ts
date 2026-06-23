@@ -131,6 +131,100 @@ describe('MintGallery API', () => {
     expect(cachedThumbnail.statusCode).toBe(304)
   })
 
+  it('updates privacy masking, visibility, and search without weakening permissions', async () => {
+    const bootstrap = await app.inject({
+      method: 'POST',
+      url: '/api/bootstrap',
+      payload: { username: 'owner', password: 'strong-password' },
+    })
+    const ownerCookie = bootstrap.headers['set-cookie']?.split(';')[0]
+    await app.inject({
+      method: 'POST',
+      url: '/api/users',
+      headers: { cookie: ownerCookie },
+      payload: { username: 'family', temporaryPassword: 'temporary-password' },
+    })
+    const memberLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'family', password: 'temporary-password' },
+    })
+    const memberCookie = memberLogin.headers['set-cookie']?.split(';')[0]
+
+    const boundary = '----mintgallery-privacy-boundary'
+    const image = await sharp({
+      create: { width: 10, height: 10, channels: 3, background: '#2d6a4f' },
+    }).png().toBuffer()
+    const payload = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="screen-private.png"\r\nContent-Type: image/png\r\n\r\n`,
+      ),
+      image,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ])
+    const upload = await app.inject({
+      method: 'POST',
+      url: '/api/assets?visibility=SHARED',
+      headers: { cookie: ownerCookie, 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload,
+    })
+    const asset = upload.json().asset
+    expect(asset).toMatchObject({ visibility: 'SHARED', privacyMasked: false })
+
+    const masked = await app.inject({
+      method: 'PATCH',
+      url: `/api/assets/${asset.id}`,
+      headers: { cookie: ownerCookie },
+      payload: { privacyMasked: true },
+    })
+    expect(masked.statusCode).toBe(200)
+    expect(masked.json().asset).toMatchObject({ id: asset.id, privacyMasked: true })
+
+    const search = await app.inject({
+      method: 'GET',
+      url: '/api/assets?scope=SHARED&q=screen',
+      headers: { cookie: memberCookie },
+    })
+    expect(search.json().assets).toHaveLength(1)
+    expect(search.json().assets[0]).toMatchObject({ id: asset.id, privacyMasked: true })
+    const memberThumbnail = await app.inject({
+      method: 'GET',
+      url: asset.thumbnailUrl,
+      headers: { cookie: memberCookie },
+    })
+    expect(memberThumbnail.statusCode).toBe(200)
+
+    const forbiddenUpdate = await app.inject({
+      method: 'PATCH',
+      url: `/api/assets/${asset.id}`,
+      headers: { cookie: memberCookie },
+      payload: { privacyMasked: false },
+    })
+    expect(forbiddenUpdate.statusCode).toBe(403)
+
+    const moved = await app.inject({
+      method: 'PATCH',
+      url: '/api/assets',
+      headers: { cookie: ownerCookie },
+      payload: { assetIds: [asset.id], visibility: 'PRIVATE', privacyMasked: false },
+    })
+    expect(moved.statusCode).toBe(200)
+    expect(moved.json().assets[0]).toMatchObject({ id: asset.id, visibility: 'PRIVATE', privacyMasked: false })
+
+    const memberSearch = await app.inject({
+      method: 'GET',
+      url: '/api/assets?scope=SHARED&q=screen',
+      headers: { cookie: memberCookie },
+    })
+    expect(memberSearch.json().assets).toHaveLength(0)
+    const forbiddenMedia = await app.inject({
+      method: 'GET',
+      url: asset.thumbnailUrl,
+      headers: { cookie: memberCookie },
+    })
+    expect(forbiddenMedia.statusCode).toBe(403)
+  })
+
   it('orders photos by shooting time and filters timeline months', async () => {
     const bootstrap = await app.inject({
       method: 'POST',

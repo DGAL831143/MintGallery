@@ -32,6 +32,7 @@ export function openDatabase(databasePath: string): DatabaseSync {
       owner_id TEXT NOT NULL REFERENCES users(id),
       type TEXT NOT NULL CHECK (type IN ('IMAGE', 'VIDEO', 'LIVE_PHOTO')),
       visibility TEXT NOT NULL CHECK (visibility IN ('SHARED', 'PRIVATE')),
+      privacy_masked INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL CHECK (status IN ('PROCESSING', 'READY', 'FAILED')),
       original_name TEXT NOT NULL,
       mime_type TEXT NOT NULL,
@@ -115,6 +116,14 @@ export function openDatabase(databasePath: string): DatabaseSync {
       throw error
     }
   }
+
+  const assetColumns = database.prepare("PRAGMA table_info('assets')").all() as Array<{ name: string }>
+  if (!assetColumns.some((column) => column.name === 'privacy_masked')) {
+    database.exec(`
+      ALTER TABLE assets ADD COLUMN privacy_masked INTEGER NOT NULL DEFAULT 0;
+    `)
+  }
+  database.exec('CREATE INDEX IF NOT EXISTS idx_assets_privacy_masked ON assets(privacy_masked);')
 
   return database
 }

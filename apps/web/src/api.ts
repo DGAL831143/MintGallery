@@ -66,19 +66,38 @@ export const galleryApi = {
     cursor?: string | null,
     folderId?: string | null,
     month?: string | null,
+    query?: string | null,
   ) => {
     const search = new URLSearchParams({ scope, limit: '30' })
     if (cursor) search.set('cursor', cursor)
     if (folderId) search.set('folderId', folderId)
     if (month) search.set('month', month)
+    if (query?.trim()) search.set('q', query.trim())
     return api<{ assets: Asset[]; nextCursor: string | null }>(`/api/assets?${search}`)
   },
+  updateAsset: (
+    id: string,
+    changes: { visibility?: 'SHARED' | 'PRIVATE'; privacyMasked?: boolean },
+  ) =>
+    api<{ asset: Asset }>(`/api/assets/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(changes),
+    }),
+  updateAssets: (
+    assetIds: string[],
+    changes: { visibility?: 'SHARED' | 'PRIVATE'; privacyMasked?: boolean },
+  ) =>
+    api<{ assets: Asset[] }>('/api/assets', {
+      method: 'PATCH',
+      body: JSON.stringify({ assetIds, ...changes }),
+    }),
 }
 
 export const timelineApi = {
-  months: (scope: 'SHARED' | 'PRIVATE', folderId?: string | null) => {
+  months: (scope: 'SHARED' | 'PRIVATE', folderId?: string | null, query?: string | null) => {
     const search = new URLSearchParams({ scope })
     if (folderId) search.set('folderId', folderId)
+    if (query?.trim()) search.set('q', query.trim())
     return api<{ months: TimelineMonth[] }>(`/api/timeline/months?${search}`)
   },
 }

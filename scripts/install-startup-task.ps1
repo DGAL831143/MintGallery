@@ -120,7 +120,7 @@ Register-ScheduledTask `
   -Trigger @($healthStartupTrigger, $healthLogonTrigger, $healthIntervalTrigger) `
   -Principal $principal `
   -Settings $healthSettings `
-  -Description 'Checks MintGallery health and repairs the private Tailscale proxy when needed.' `
+  -Description 'Checks MintGallery health, repairs the private Tailscale proxy, and restarts stuck Tailscale service state when needed.' `
   -ErrorAction Stop `
   -Force | Out-Null
 

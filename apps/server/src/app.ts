@@ -67,6 +67,7 @@ interface AssetRow {
   type: 'IMAGE' | 'VIDEO' | 'LIVE_PHOTO'
   visibility: 'SHARED' | 'PRIVATE'
   privacy_masked: number
+  favorite: number
   tags: string
   status: 'PROCESSING' | 'READY' | 'FAILED'
   original_name: string
@@ -77,6 +78,8 @@ interface AssetRow {
   duration_ms: number | null
   shooting_time: number | null
   uploaded_at: number
+  deleted_at: number | null
+  deleted_by: string | null
   sort_time?: number
   processing_error: string | null
   original_file_id: string
@@ -95,6 +98,7 @@ interface MediaRow {
   asset_id: string
   owner_id: string
   visibility: 'SHARED' | 'PRIVATE'
+  deleted_at: number | null
   original_name: string
 }
 
@@ -126,6 +130,10 @@ function cleanFolderName(value: unknown): string {
 
 function validVisibility(value: unknown): value is 'SHARED' | 'PRIVATE' {
   return value === 'SHARED' || value === 'PRIVATE'
+}
+
+function validGalleryFilter(value: unknown): value is 'ALL' | 'FAVORITES' | 'DELETED' {
+  return value === 'ALL' || value === 'FAVORITES' || value === 'DELETED'
 }
 
 function cleanSearchQuery(value: unknown): string {
@@ -214,6 +222,20 @@ function cleanAssetIds(value: unknown, max = 100): string[] {
   return [...new Set(value.filter((id): id is string => typeof id === 'string' && id.length > 0))].slice(0, max)
 }
 
+function canReadAsset(user: SessionUser, row: AssetRow): boolean {
+  if (row.deleted_at !== null && user.role !== 'ADMIN' && row.owner_id !== user.id) return false
+  return user.role === 'ADMIN' || row.visibility === 'SHARED' || row.owner_id === user.id
+}
+
+function canManageAsset(user: SessionUser, row: AssetRow): boolean {
+  return user.role === 'ADMIN' || row.owner_id === user.id
+}
+
+function onlyFavoriteChange(body: Record<string, unknown> | undefined): boolean {
+  if (!body || !Object.prototype.hasOwnProperty.call(body, 'favorite')) return false
+  return Object.keys(body).every((key) => key === 'assetIds' || key === 'favorite')
+}
+
 const assetFileColumns = `
   (SELECT id FROM asset_files
     WHERE asset_id = a.id
@@ -268,6 +290,7 @@ function serializeAsset(row: AssetRow) {
     type: row.type,
     visibility: row.visibility,
     privacyMasked: row.privacy_masked === 1,
+    favorite: row.favorite === 1,
     tags: parseTags(row.tags),
     status: row.status,
     originalName: row.original_name,
@@ -278,6 +301,7 @@ function serializeAsset(row: AssetRow) {
     durationMs: row.duration_ms,
     shootingTime: row.shooting_time === null ? null : new Date(row.shooting_time).toISOString(),
     uploadedAt: new Date(row.uploaded_at).toISOString(),
+    deletedAt: row.deleted_at === null ? null : new Date(row.deleted_at).toISOString(),
     processingError: row.processing_error,
     originalUrl: mediaUrl(row.original_file_id),
     liveOriginalUrl: mediaUrl(row.live_original_file_id),
@@ -340,7 +364,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.7.1' }))
+  app.get('/api/health', async () => ({ ok: true, version: '0.7.2' }))
 
   app.get('/api/bootstrap/status', async () => {
     const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }
@@ -558,9 +582,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   app.get('/api/folders', { preHandler: requireUser }, async (request) => {
     const rows = database.prepare(`
-      SELECT f.id, f.name, f.created_at, COUNT(fa.asset_id) AS item_count
+      SELECT f.id, f.name, f.created_at, COUNT(a.id) AS item_count
       FROM folders f
       LEFT JOIN folder_assets fa ON fa.folder_id = f.id
+      LEFT JOIN assets a ON a.id = fa.asset_id AND a.deleted_at IS NULL
       WHERE f.owner_id = ?
       GROUP BY f.id
       ORDER BY f.name COLLATE NOCASE, f.created_at
@@ -632,7 +657,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const parameters = [request.currentUser!.id, ...assetIds]
       const allowed = database.prepare(`
         SELECT id FROM assets
-        WHERE ${visibility} AND id IN (${placeholders})
+        WHERE ${visibility} AND deleted_at IS NULL AND id IN (${placeholders})
       `).all(...parameters) as Array<{ id: string }>
       if (allowed.length !== assetIds.length) {
         return reply.code(403).send({ message: '部分照片不存在或当前账号无权访问' })
@@ -791,15 +816,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   app.patch('/api/assets/:id', { preHandler: requireUser }, async (request, reply) => {
     const { id } = request.params as { id: string }
-    const body = request.body as { visibility?: unknown; privacyMasked?: unknown; tags?: unknown } | undefined
+    const body = request.body as {
+      visibility?: unknown
+      privacyMasked?: unknown
+      favorite?: unknown
+      tags?: unknown
+      deleted?: unknown
+    } | undefined
     const existing = findAsset(database, id)
     if (!existing) return reply.code(404).send({ message: '照片不存在' })
-    if (request.currentUser!.role !== 'ADMIN' && existing.owner_id !== request.currentUser!.id) {
+    const favoriteOnly = onlyFavoriteChange(body as Record<string, unknown> | undefined)
+    if (favoriteOnly && !canReadAsset(request.currentUser!, existing)) {
+      return reply.code(403).send({ message: '无权查看此照片' })
+    }
+    if (!favoriteOnly && !canManageAsset(request.currentUser!, existing)) {
       return reply.code(403).send({ message: '只能修改自己上传的照片' })
     }
 
     const updates: string[] = []
-    const parameters: Array<string | number> = []
+    const parameters: Array<string | number | null> = []
     if (body && Object.prototype.hasOwnProperty.call(body, 'visibility')) {
       if (!validVisibility(body.visibility)) return reply.code(400).send({ message: '可见范围无效' })
       updates.push('visibility = ?')
@@ -812,10 +847,29 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       updates.push('privacy_masked = ?')
       parameters.push(body.privacyMasked ? 1 : 0)
     }
+    if (body && Object.prototype.hasOwnProperty.call(body, 'favorite')) {
+      if (typeof body.favorite !== 'boolean') {
+        return reply.code(400).send({ message: '收藏状态无效' })
+      }
+      updates.push('favorite = ?')
+      parameters.push(body.favorite ? 1 : 0)
+    }
     if (body && Object.prototype.hasOwnProperty.call(body, 'tags')) {
       const tags = cleanTags(body.tags)
       updates.push('tags = ?')
       parameters.push(JSON.stringify(tags))
+    }
+    if (body && Object.prototype.hasOwnProperty.call(body, 'deleted')) {
+      if (typeof body.deleted !== 'boolean') {
+        return reply.code(400).send({ message: '回收站状态无效' })
+      }
+      updates.push('deleted_at = ?')
+      updates.push('deleted_by = ?')
+      if (body.deleted) {
+        parameters.push(Date.now(), request.currentUser!.id)
+      } else {
+        parameters.push(null, null)
+      }
     }
     if (updates.length === 0) return reply.code(400).send({ message: '没有需要修改的内容' })
 
@@ -829,13 +883,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       assetIds?: unknown
       visibility?: unknown
       privacyMasked?: unknown
+      favorite?: unknown
       tags?: unknown
+      deleted?: unknown
     } | undefined
     const assetIds = cleanAssetIds(body?.assetIds)
     if (assetIds.length === 0) return reply.code(400).send({ message: '请选择需要修改的照片' })
 
     const updates: string[] = []
-    const updateParameters: Array<string | number> = []
+    const updateParameters: Array<string | number | null> = []
     if (body && Object.prototype.hasOwnProperty.call(body, 'visibility')) {
       if (!validVisibility(body.visibility)) return reply.code(400).send({ message: '可见范围无效' })
       updates.push('visibility = ?')
@@ -848,23 +904,51 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       updates.push('privacy_masked = ?')
       updateParameters.push(body.privacyMasked ? 1 : 0)
     }
+    if (body && Object.prototype.hasOwnProperty.call(body, 'favorite')) {
+      if (typeof body.favorite !== 'boolean') {
+        return reply.code(400).send({ message: '收藏状态无效' })
+      }
+      updates.push('favorite = ?')
+      updateParameters.push(body.favorite ? 1 : 0)
+    }
     if (body && Object.prototype.hasOwnProperty.call(body, 'tags')) {
       const tags = cleanTags(body.tags)
       updates.push('tags = ?')
       updateParameters.push(JSON.stringify(tags))
     }
+    if (body && Object.prototype.hasOwnProperty.call(body, 'deleted')) {
+      if (typeof body.deleted !== 'boolean') {
+        return reply.code(400).send({ message: '回收站状态无效' })
+      }
+      updates.push('deleted_at = ?')
+      updates.push('deleted_by = ?')
+      if (body.deleted) {
+        updateParameters.push(Date.now(), request.currentUser!.id)
+      } else {
+        updateParameters.push(null, null)
+      }
+    }
     if (updates.length === 0) return reply.code(400).send({ message: '没有需要修改的内容' })
 
     const placeholders = assetIds.map(() => '?').join(', ')
-    const ownerGuard = request.currentUser!.role === 'ADMIN' ? '' : ' AND owner_id = ?'
-    const ownedParameters = request.currentUser!.role === 'ADMIN'
+    const favoriteOnly = onlyFavoriteChange(body as Record<string, unknown> | undefined)
+    const permissionGuard = favoriteOnly
+      ? request.currentUser!.role === 'ADMIN'
+        ? ' AND deleted_at IS NULL'
+        : " AND deleted_at IS NULL AND (visibility = 'SHARED' OR owner_id = ?)"
+      : request.currentUser!.role === 'ADMIN'
+        ? ''
+        : ' AND owner_id = ?'
+    const permissionParameters = request.currentUser!.role === 'ADMIN'
       ? assetIds
       : [...assetIds, request.currentUser!.id]
     const rows = database
-      .prepare(`SELECT id FROM assets WHERE id IN (${placeholders})${ownerGuard}`)
-      .all(...ownedParameters) as Array<{ id: string }>
+      .prepare(`SELECT id FROM assets WHERE id IN (${placeholders})${permissionGuard}`)
+      .all(...permissionParameters) as Array<{ id: string }>
     if (rows.length !== assetIds.length) {
-      return reply.code(403).send({ message: '只能修改自己上传的照片' })
+      return reply.code(403).send({
+        message: favoriteOnly ? '部分照片不存在或无权收藏' : '只能修改自己上传的照片',
+      })
     }
 
     database.prepare(`UPDATE assets SET ${updates.join(', ')} WHERE id IN (${placeholders})`)
@@ -889,10 +973,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       folderId?: string
       month?: string
       q?: string
+      filter?: string
     }
     const scope = query.scope ?? 'SHARED'
     if (scope !== 'SHARED' && scope !== 'PRIVATE') {
       return reply.code(400).send({ message: '相册范围无效' })
+    }
+    const filter = query.filter ?? 'ALL'
+    if (!validGalleryFilter(filter)) {
+      return reply.code(400).send({ message: '图库筛选无效' })
     }
     if (query.month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(query.month)) {
       return reply.code(400).send({ message: '月份格式无效' })
@@ -912,11 +1001,23 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     }
 
-    const conditions = scope === 'SHARED'
-      ? ["a.visibility = 'SHARED'"]
-      : ["a.visibility = 'PRIVATE'", 'a.owner_id = ?']
-    const parameters: Array<string | number> = scope === 'PRIVATE' ? [request.currentUser!.id] : []
-    if (query.folderId) {
+    const sortExpression = filter === 'DELETED' ? 'a.deleted_at' : 'COALESCE(a.shooting_time, a.uploaded_at)'
+    const conditions = filter === 'DELETED'
+      ? ['a.deleted_at IS NOT NULL']
+      : scope === 'SHARED'
+        ? ["a.visibility = 'SHARED'", 'a.deleted_at IS NULL']
+        : ["a.visibility = 'PRIVATE'", 'a.owner_id = ?', 'a.deleted_at IS NULL']
+    const parameters: Array<string | number> = filter !== 'DELETED' && scope === 'PRIVATE'
+      ? [request.currentUser!.id]
+      : []
+    if (filter === 'DELETED' && request.currentUser!.role !== 'ADMIN') {
+      conditions.push('a.owner_id = ?')
+      parameters.push(request.currentUser!.id)
+    }
+    if (filter === 'FAVORITES') {
+      conditions.push('a.favorite = 1')
+    }
+    if (query.folderId && filter !== 'DELETED') {
       const folder = database.prepare('SELECT id FROM folders WHERE id = ? AND owner_id = ?')
         .get(query.folderId, request.currentUser!.id)
       if (!folder) return reply.code(404).send({ message: '文件夹不存在' })
@@ -925,19 +1026,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       )`)
       parameters.push(query.folderId)
     }
-    if (query.month) {
+    if (query.month && filter !== 'DELETED') {
       const [year, month] = query.month.split('-').map(Number)
       const start = new Date(year!, month! - 1, 1).getTime()
       const end = new Date(year!, month!, 1).getTime()
-      conditions.push('COALESCE(a.shooting_time, a.uploaded_at) >= ?')
-      conditions.push('COALESCE(a.shooting_time, a.uploaded_at) < ?')
+      conditions.push(`${sortExpression} >= ?`)
+      conditions.push(`${sortExpression} < ?`)
       parameters.push(start, end)
     }
     addSearchCondition(conditions, parameters, query.q)
     if (cursor) {
       conditions.push(`(
-        COALESCE(a.shooting_time, a.uploaded_at) < ? OR
-        (COALESCE(a.shooting_time, a.uploaded_at) = ? AND a.id < ?)
+        ${sortExpression} < ? OR
+        (${sortExpression} = ? AND a.id < ?)
       )`)
       parameters.push(cursor[0], cursor[0], cursor[1])
     }
@@ -945,7 +1046,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
     const rows = database
       .prepare(`
-        SELECT a.*, COALESCE(a.shooting_time, a.uploaded_at) AS sort_time,
+        SELECT a.*, ${sortExpression} AS sort_time,
           u.username AS owner_name,
           ${assetFileColumns}
         FROM assets a
@@ -967,16 +1068,32 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   })
 
   app.get('/api/timeline/months', { preHandler: requireUser }, async (request, reply) => {
-    const query = request.query as { scope?: string; folderId?: string; q?: string }
+    const query = request.query as { scope?: string; folderId?: string; q?: string; filter?: string }
     const scope = query.scope ?? 'SHARED'
     if (scope !== 'SHARED' && scope !== 'PRIVATE') {
       return reply.code(400).send({ message: '相册范围无效' })
     }
-    const conditions = scope === 'SHARED'
-      ? ["a.visibility = 'SHARED'"]
-      : ["a.visibility = 'PRIVATE'", 'a.owner_id = ?']
-    const parameters: Array<string | number> = scope === 'PRIVATE' ? [request.currentUser!.id] : []
-    if (query.folderId) {
+    const filter = query.filter ?? 'ALL'
+    if (!validGalleryFilter(filter)) {
+      return reply.code(400).send({ message: '图库筛选无效' })
+    }
+    const timeExpression = filter === 'DELETED' ? 'a.deleted_at' : 'COALESCE(a.shooting_time, a.uploaded_at)'
+    const conditions = filter === 'DELETED'
+      ? ['a.deleted_at IS NOT NULL']
+      : scope === 'SHARED'
+        ? ["a.visibility = 'SHARED'", 'a.deleted_at IS NULL']
+        : ["a.visibility = 'PRIVATE'", 'a.owner_id = ?', 'a.deleted_at IS NULL']
+    const parameters: Array<string | number> = filter !== 'DELETED' && scope === 'PRIVATE'
+      ? [request.currentUser!.id]
+      : []
+    if (filter === 'DELETED' && request.currentUser!.role !== 'ADMIN') {
+      conditions.push('a.owner_id = ?')
+      parameters.push(request.currentUser!.id)
+    }
+    if (filter === 'FAVORITES') {
+      conditions.push('a.favorite = 1')
+    }
+    if (query.folderId && filter !== 'DELETED') {
       const folder = database.prepare('SELECT id FROM folders WHERE id = ? AND owner_id = ?')
         .get(query.folderId, request.currentUser!.id)
       if (!folder) return reply.code(404).send({ message: '文件夹不存在' })
@@ -990,7 +1107,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const rows = database.prepare(`
       SELECT
         strftime(
-          '%Y-%m', COALESCE(a.shooting_time, a.uploaded_at) / 1000,
+          '%Y-%m', ${timeExpression} / 1000,
           'unixepoch', 'localtime'
         ) AS month,
         COUNT(*) AS count
@@ -1007,7 +1124,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const { id } = request.params as { id: string }
     const row = database
       .prepare(`
-        SELECT f.*, a.owner_id, a.visibility, a.original_name
+        SELECT f.*, a.owner_id, a.visibility, a.deleted_at, a.original_name
         FROM asset_files f JOIN assets a ON a.id = f.asset_id
         WHERE f.id = ?
       `)
@@ -1016,7 +1133,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!row) return reply.code(404).send({ message: '文件不存在' })
     const canRead =
       request.currentUser!.role === 'ADMIN' ||
-      row.visibility === 'SHARED' ||
+      (row.deleted_at === null && row.visibility === 'SHARED') ||
       row.owner_id === request.currentUser!.id
     if (!canRead) return reply.code(403).send({ message: '无权查看此文件' })
 

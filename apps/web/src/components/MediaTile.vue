@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, CircleAlert, EyeOff, Film, Sparkles } from 'lucide-vue-next'
+import { Check, CircleAlert, EyeOff, Film, Sparkles, Star, Trash2 } from 'lucide-vue-next'
 import type { Asset } from '../types'
 
 defineProps<{
@@ -15,7 +15,7 @@ defineEmits<{ activate: [] }>()
 <template>
   <button
     class="media-tile"
-    :class="{ selecting, selected, 'privacy-masked': asset.privacyMasked }"
+    :class="{ selecting, selected, 'privacy-masked': asset.privacyMasked, favorite: asset.favorite }"
     :style="{ aspectRatio: ratio }"
     :aria-label="selecting ? `选择 ${asset.originalName}` : `查看 ${asset.originalName}`"
     :aria-pressed="selecting ? selected : undefined"
@@ -27,6 +27,8 @@ defineEmits<{ activate: [] }>()
       <CircleAlert v-else :size="28" />
     </div>
     <span v-if="selecting" class="selection-mark"><Check v-if="selected" :size="17" /></span>
+    <span v-if="asset.favorite" class="favorite-badge"><Star :size="14" fill="currentColor" />收藏</span>
+    <span v-if="asset.deletedAt" class="deleted-badge"><Trash2 :size="14" />最近删除</span>
     <span v-if="asset.privacyMasked" class="privacy-badge"><EyeOff :size="14" />防窥</span>
     <span v-if="asset.type === 'VIDEO'" class="media-badge"><Film :size="14" />视频</span>
     <span v-else-if="asset.type === 'LIVE_PHOTO'" class="media-badge live-badge"><Sparkles :size="14" />LIVE</span>

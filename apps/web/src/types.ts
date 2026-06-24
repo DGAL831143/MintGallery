@@ -14,6 +14,7 @@ export interface Asset {
   type: 'IMAGE' | 'VIDEO' | 'LIVE_PHOTO'
   visibility: 'SHARED' | 'PRIVATE'
   privacyMasked: boolean
+  favorite: boolean
   tags: string[]
   status: 'PROCESSING' | 'READY' | 'FAILED'
   originalName: string
@@ -24,6 +25,7 @@ export interface Asset {
   durationMs: number | null
   shootingTime: string | null
   uploadedAt: string
+  deletedAt: string | null
   processingError: string | null
   originalUrl: string
   liveOriginalUrl: string | null

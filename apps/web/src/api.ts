@@ -67,17 +67,25 @@ export const galleryApi = {
     folderId?: string | null,
     month?: string | null,
     query?: string | null,
+    filter: 'ALL' | 'FAVORITES' | 'DELETED' = 'ALL',
   ) => {
     const search = new URLSearchParams({ scope, limit: '30' })
     if (cursor) search.set('cursor', cursor)
     if (folderId) search.set('folderId', folderId)
     if (month) search.set('month', month)
     if (query?.trim()) search.set('q', query.trim())
+    if (filter !== 'ALL') search.set('filter', filter)
     return api<{ assets: Asset[]; nextCursor: string | null }>(`/api/assets?${search}`)
   },
   updateAsset: (
     id: string,
-    changes: { visibility?: 'SHARED' | 'PRIVATE'; privacyMasked?: boolean; tags?: string[] },
+    changes: {
+      visibility?: 'SHARED' | 'PRIVATE'
+      privacyMasked?: boolean
+      favorite?: boolean
+      tags?: string[]
+      deleted?: boolean
+    },
   ) =>
     api<{ asset: Asset }>(`/api/assets/${id}`, {
       method: 'PATCH',
@@ -85,7 +93,13 @@ export const galleryApi = {
     }),
   updateAssets: (
     assetIds: string[],
-    changes: { visibility?: 'SHARED' | 'PRIVATE'; privacyMasked?: boolean; tags?: string[] },
+    changes: {
+      visibility?: 'SHARED' | 'PRIVATE'
+      privacyMasked?: boolean
+      favorite?: boolean
+      tags?: string[]
+      deleted?: boolean
+    },
   ) =>
     api<{ assets: Asset[] }>('/api/assets', {
       method: 'PATCH',
@@ -94,10 +108,16 @@ export const galleryApi = {
 }
 
 export const timelineApi = {
-  months: (scope: 'SHARED' | 'PRIVATE', folderId?: string | null, query?: string | null) => {
+  months: (
+    scope: 'SHARED' | 'PRIVATE',
+    folderId?: string | null,
+    query?: string | null,
+    filter: 'ALL' | 'FAVORITES' | 'DELETED' = 'ALL',
+  ) => {
     const search = new URLSearchParams({ scope })
     if (folderId) search.set('folderId', folderId)
     if (query?.trim()) search.set('q', query.trim())
+    if (filter !== 'ALL') search.set('filter', filter)
     return api<{ months: TimelineMonth[] }>(`/api/timeline/months?${search}`)
   },
 }

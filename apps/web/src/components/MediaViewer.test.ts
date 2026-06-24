@@ -18,6 +18,7 @@ const livePhoto: Asset = {
   type: 'LIVE_PHOTO',
   visibility: 'SHARED',
   privacyMasked: false,
+  favorite: false,
   tags: ['键盘', '测试'],
   status: 'READY',
   originalName: 'IMG_5863.jpg',
@@ -28,6 +29,7 @@ const livePhoto: Asset = {
   durationMs: 1500,
   shootingTime: null,
   uploadedAt: '2026-06-18T10:38:00.000Z',
+  deletedAt: null,
   processingError: null,
   originalUrl: '/api/assets/live-photo-1/original',
   liveOriginalUrl: '/api/assets/live-photo-1/live-original',
@@ -119,6 +121,24 @@ describe('MediaViewer', () => {
     await flushPromises()
 
     expect(updateAssetMock).toHaveBeenCalledWith('live-photo-1', { tags: ['旅行', '生日'] })
+
+    wrapper.unmount()
+    pause.mockRestore()
+  })
+
+  it('lets a visible member favorite an asset from the toolbar', async () => {
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    updateAssetMock.mockResolvedValue({ asset: { ...livePhoto, favorite: true } })
+    const wrapper = mount(MediaViewer, {
+      props: { assets: [livePhoto], index: 0, currentUser: { id: 'other-user', username: 'family', role: 'MEMBER', status: 'ACTIVE', mustChangePassword: false } },
+    })
+
+    const favoriteButton = wrapper.find('[title="收藏"]')
+    expect(favoriteButton.exists()).toBe(true)
+    await favoriteButton.trigger('click')
+    await flushPromises()
+
+    expect(updateAssetMock).toHaveBeenCalledWith('live-photo-1', { favorite: true })
 
     wrapper.unmount()
     pause.mockRestore()

@@ -169,7 +169,13 @@ describe('MintGallery API', () => {
       payload,
     })
     const asset = upload.json().asset
-    expect(asset).toMatchObject({ visibility: 'SHARED', privacyMasked: false, tags: [] })
+    expect(asset).toMatchObject({
+      visibility: 'SHARED',
+      privacyMasked: false,
+      favorite: false,
+      tags: [],
+      deletedAt: null,
+    })
 
     const masked = await app.inject({
       method: 'PATCH',
@@ -187,6 +193,71 @@ describe('MintGallery API', () => {
     })
     expect(search.json().assets).toHaveLength(1)
     expect(search.json().assets[0]).toMatchObject({ id: asset.id, privacyMasked: true })
+
+    const favorited = await app.inject({
+      method: 'PATCH',
+      url: `/api/assets/${asset.id}`,
+      headers: { cookie: memberCookie },
+      payload: { favorite: true },
+    })
+    expect(favorited.statusCode).toBe(200)
+    expect(favorited.json().asset).toMatchObject({ id: asset.id, favorite: true })
+
+    const favoriteList = await app.inject({
+      method: 'GET',
+      url: '/api/assets?scope=SHARED&filter=FAVORITES',
+      headers: { cookie: memberCookie },
+    })
+    expect(favoriteList.json().assets.map((item: { id: string }) => item.id)).toEqual([asset.id])
+
+    const forbiddenDelete = await app.inject({
+      method: 'PATCH',
+      url: `/api/assets/${asset.id}`,
+      headers: { cookie: memberCookie },
+      payload: { deleted: true },
+    })
+    expect(forbiddenDelete.statusCode).toBe(403)
+
+    const deleted = await app.inject({
+      method: 'PATCH',
+      url: `/api/assets/${asset.id}`,
+      headers: { cookie: ownerCookie },
+      payload: { deleted: true },
+    })
+    expect(deleted.statusCode).toBe(200)
+    expect(deleted.json().asset.deletedAt).toEqual(expect.any(String))
+
+    const hiddenFromShared = await app.inject({
+      method: 'GET',
+      url: '/api/assets?scope=SHARED&q=猫片',
+      headers: { cookie: memberCookie },
+    })
+    expect(hiddenFromShared.json().assets).toHaveLength(0)
+
+    const blockedDeletedMedia = await app.inject({
+      method: 'GET',
+      url: asset.thumbnailUrl,
+      headers: { cookie: memberCookie },
+    })
+    expect(blockedDeletedMedia.statusCode).toBe(403)
+
+    const recycleBin = await app.inject({
+      method: 'GET',
+      url: '/api/assets?scope=SHARED&filter=DELETED',
+      headers: { cookie: ownerCookie },
+    })
+    expect(recycleBin.json().assets).toHaveLength(1)
+    expect(recycleBin.json().assets[0]).toMatchObject({ id: asset.id, favorite: true })
+
+    const restored = await app.inject({
+      method: 'PATCH',
+      url: `/api/assets/${asset.id}`,
+      headers: { cookie: ownerCookie },
+      payload: { deleted: false },
+    })
+    expect(restored.statusCode).toBe(200)
+    expect(restored.json().asset.deletedAt).toBeNull()
+
     const memberThumbnail = await app.inject({
       method: 'GET',
       url: asset.thumbnailUrl,

@@ -33,6 +33,7 @@ export function openDatabase(databasePath: string): DatabaseSync {
       type TEXT NOT NULL CHECK (type IN ('IMAGE', 'VIDEO', 'LIVE_PHOTO')),
       visibility TEXT NOT NULL CHECK (visibility IN ('SHARED', 'PRIVATE')),
       privacy_masked INTEGER NOT NULL DEFAULT 0,
+      favorite INTEGER NOT NULL DEFAULT 0,
       tags TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL CHECK (status IN ('PROCESSING', 'READY', 'FAILED')),
       original_name TEXT NOT NULL,
@@ -44,6 +45,8 @@ export function openDatabase(databasePath: string): DatabaseSync {
       duration_ms INTEGER,
       shooting_time INTEGER,
       uploaded_at INTEGER NOT NULL,
+      deleted_at INTEGER,
+      deleted_by TEXT REFERENCES users(id),
       processing_error TEXT
     );
 
@@ -129,7 +132,24 @@ export function openDatabase(databasePath: string): DatabaseSync {
       ALTER TABLE assets ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
     `)
   }
+  if (!assetColumns.some((column) => column.name === 'favorite')) {
+    database.exec(`
+      ALTER TABLE assets ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
+    `)
+  }
+  if (!assetColumns.some((column) => column.name === 'deleted_at')) {
+    database.exec(`
+      ALTER TABLE assets ADD COLUMN deleted_at INTEGER;
+    `)
+  }
+  if (!assetColumns.some((column) => column.name === 'deleted_by')) {
+    database.exec(`
+      ALTER TABLE assets ADD COLUMN deleted_by TEXT REFERENCES users(id);
+    `)
+  }
   database.exec('CREATE INDEX IF NOT EXISTS idx_assets_privacy_masked ON assets(privacy_masked);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_assets_favorite ON assets(favorite);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_assets_deleted_at ON assets(deleted_at);')
 
   return database
 }

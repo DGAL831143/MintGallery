@@ -1,6 +1,6 @@
 # MintGallery
 
-MintGallery 是一个本地优先的私密家庭相册。当前版本支持管理员初始化、家庭成员账号、普通照片与视频上传、手动配对 Live Photo、外部文件夹扫描导入、重复项确认、按拍摄时间浏览、标签、搜索、照片信息面板、防窥隐私照片、共享/私密图片墙、个人文件夹、受保护的媒体访问，以及 Tailscale 私有访问的自动启动与健康检查。
+MintGallery 是一个本地优先的私密家庭相册。当前版本支持管理员初始化、家庭成员账号、普通照片与视频上传、手动配对 Live Photo、外部文件夹扫描导入、重复项确认、按拍摄时间浏览、标签、批量标签、收藏、最近删除、防窥隐私照片、照片信息面板、共享/私密图片墙、个人文件夹、受保护的媒体访问，以及 Tailscale 私有访问的自动启动与健康检查。
 
 ## 运行环境
 
@@ -64,17 +64,21 @@ tailscale serve status
 安装脚本会注册两个任务：
 
 - `MintGallery`：开机和登录时启动生产服务；如果 Node 进程退出，运行脚本会自动拉起。
-- `MintGallery HealthCheck`：每 3 分钟检查 `http://127.0.0.1:3000/api/health` 和 Tailscale Serve 代理；发现服务不可用时会重启任务，发现 Serve 配置漂移时会恢复到 `127.0.0.1:3000`。
+- `MintGallery HealthCheck`：每 3 分钟检查 `http://127.0.0.1:3000/api/health`、Tailscale 后端状态和 Tailscale Serve 代理；发现服务不可用时会重启任务，发现 Serve 配置漂移时会恢复到 `127.0.0.1:3000`，发现 Tailscale 卡在 `NoState/starting` 时会尝试重启 Tailscale 服务。
 
-运行日志保存在 `F:\MintGallery\logs\scheduled-server.log`，健康检查日志保存在 `F:\MintGallery\logs\health-check.log`。需要手动诊断时可运行：
+运行日志保存在 `F:\MintGallery\logs\scheduled-server.log`，健康检查日志保存在 `F:\MintGallery\logs\health-check.log`。日常手动启动或修复时运行：
 
 ```powershell
-.\scripts\ensure-private-service.ps1 `
-  -DataDirectory 'F:\MintGallery\data' `
-  -NodePath 'F:\nodejs\node.exe' `
-  -ReportOnly `
-  -Json
+.\scripts\start-mintgallery-service.ps1
 ```
+
+需要输出完整 JSON 诊断时可运行：
+
+```powershell
+.\scripts\start-mintgallery-service.ps1 -Json
+```
+
+日常启动优先使用任务计划：确认 `MintGallery` 和 `MintGallery HealthCheck` 存在后，只需要保持电脑开机、联网、Tailscale 已登录。网站打不开时先运行上面的启动脚本；如果返回 `HealthOk=true` 但 `TailscaleBackendState=NoState` 且无法自动恢复，请以管理员身份重启 Tailscale 服务或重启电脑。
 
 ## GitHub Pages 静态预览
 
@@ -138,11 +142,15 @@ npm run dev
 - 时间轴和月份筛选继续遵守“家庭共享”“仅自己可见”和个人文件夹权限。
 - v0.5.0 启动时会为既有图片和 Live Photo 补录可读取的拍摄时间，只更新 SQLite，不会改写或移动原件。
 
-## 标签、搜索、信息面板与防窥照片
+## 标签、收藏、最近删除与防窥照片
 
 相册顶部提供搜索入口，可在当前“家庭共享/仅自己可见”、文件夹和月份筛选范围内搜索标签、上传者和媒体类型（照片、视频、实况）。原始上传文件名仍会作为技术元数据保留，但不再作为主要展示名称。
 
-打开照片查看器后，标题和信息面板优先展示用户设置的标签；没有标签时显示“未设置标签”。上传者或管理员可以在信息面板中编辑标签，并修改“家庭共享/仅自己可见”和“设为防窥/取消防窥”；选择模式下也支持批量修改状态。
+打开照片查看器后，标题和信息面板优先展示用户设置的标签；没有标签时显示“未设置标签”。上传者或管理员可以在信息面板中编辑标签，并修改“家庭共享/仅自己可见”和“设为防窥/取消防窥”；选择模式下也支持批量覆盖所选项目的标签。
+
+收藏是家庭共同收藏：已登录且有权查看照片的成员可以点亮星标，收藏后的内容会出现在“收藏”入口中。收藏不会改变照片的可见范围。
+
+“最近删除”是软删除：上传者或管理员把照片移入最近删除后，普通图库、时间轴、文件夹和搜索结果不再显示该项目；原始文件仍保留在 `F:\MintGallery\data` 中，可从最近删除恢复。本版本暂不提供永久删除原文件。
 
 防窥照片用于防止旁人从照片墙、时间轴或搜索结果中瞥到内容，不等同于访问权限：
 
@@ -202,7 +210,7 @@ npm run start -w @mintgallery/server
 - Live Photo 已支持手动选择同名图片与 MOV 配对上传；暂不支持从 iPhone 相册自动提取双文件。
 - 已支持拍摄时间提取、按月时间轴、月份筛选和桌面/手机响应式浏览；缺少拍摄时间时使用上传时间。
 - 个人文件夹支持批量加入、移出和筛选；外部文件夹扫描导入支持重复项确认和同名 Live Photo 候选配对。
-- 已支持标签、当前范围内搜索、照片信息面板、防窥遮挡，以及单张/批量修改防窥状态和可见范围。
+- 已支持标签、批量标签、收藏、最近删除、当前范围内搜索、照片信息面板、防窥遮挡，以及单张/批量修改防窥状态和可见范围。
 - Windows 生产部署支持开机/登录启动、Node 退出自动拉起、周期健康检查和 Tailscale Serve 配置自愈；电脑关机、休眠、断网或 Tailscale 客户端离线时仍无法访问。
 - 当前默认只有本地硬盘一个副本。界面显示“仅 1 个副本”时，请勿删除手机中的唯一原件。
 

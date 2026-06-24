@@ -16,9 +16,12 @@ import {
   LoaderCircle,
   LockKeyhole,
   LogOut,
+  RotateCcw,
   Search,
   Settings,
   ShieldAlert,
+  Star,
+  Tags,
   Trash2,
   UserRound,
   UsersRound,
@@ -35,8 +38,10 @@ import UploadPanel from './UploadPanel.vue'
 
 const props = defineProps<{ user: User }>()
 const emit = defineEmits<{ signedOut: [] }>()
+type GalleryFilter = 'ALL' | 'FAVORITES' | 'DELETED'
 const scope = ref<'SHARED' | 'PRIVATE'>('SHARED')
 const viewMode = ref<'TIMELINE' | 'GRID'>('TIMELINE')
+const galleryFilter = ref<GalleryFilter>('ALL')
 const assets = ref<Asset[]>([])
 const folders = ref<GalleryFolder[]>([])
 const months = ref<TimelineMonth[]>([])
@@ -55,15 +60,39 @@ const folderDialogOpen = ref(false)
 const folderBusy = ref(false)
 const folderError = ref('')
 const assetUpdateBusy = ref(false)
+const bulkTagOpen = ref(false)
+const bulkTagInput = ref('')
+let assetLoadRequest = 0
 
 const activeFolder = computed(() => folders.value.find((folder) => folder.id === activeFolderId.value) ?? null)
 const selectedCount = computed(() => selectedIds.value.size)
 const timelineGroups = computed(() => groupTimelineAssets(assets.value))
 const scopeTitle = computed(() => activeFolder.value?.name ?? (scope.value === 'SHARED' ? '家庭共享' : '仅自己可见'))
-const galleryTitle = computed(() => activeMonth.value ? formatMonth(activeMonth.value) : scopeTitle.value)
+const galleryTitle = computed(() => {
+  if (galleryFilter.value === 'FAVORITES') return '收藏'
+  if (galleryFilter.value === 'DELETED') return '最近删除'
+  return activeMonth.value ? formatMonth(activeMonth.value) : scopeTitle.value
+})
 const searchActive = computed(() => searchQuery.value.trim().length > 0)
+const browsingDeleted = computed(() => galleryFilter.value === 'DELETED')
+const emptyTitle = computed(() => {
+  if (searchActive.value) return '没有匹配的照片'
+  if (galleryFilter.value === 'FAVORITES') return '还没有收藏照片'
+  if (galleryFilter.value === 'DELETED') return '最近删除为空'
+  if (activeMonth.value) return '这个月没有照片'
+  if (activeFolder.value) return '这个文件夹还是空的'
+  return scope.value === 'SHARED' ? '家庭相册还是空的' : '这里留给自己的照片'
+})
+const emptyMessage = computed(() => {
+  if (searchActive.value) return '换个标签、上传者或媒体类型再试。'
+  if (galleryFilter.value === 'FAVORITES') return '在照片墙或查看器中点亮星标后，会出现在这里。'
+  if (galleryFilter.value === 'DELETED') return '被删除的照片会先进入这里，原文件仍保留在电脑中。'
+  if (activeFolder.value) return '进入选择模式，将照片加入这个文件夹。'
+  return '使用右上角的上传按钮添加第一批照片或视频。'
+})
 
 async function load(reset = true) {
+  const requestId = ++assetLoadRequest
   if (reset) {
     loading.value = true
     assets.value = []
@@ -79,12 +108,16 @@ async function load(reset = true) {
       activeFolderId.value,
       activeMonth.value,
       searchQuery.value,
+      galleryFilter.value,
     )
+    if (requestId !== assetLoadRequest) return
     assets.value = reset ? result.assets : [...assets.value, ...result.assets]
     cursor.value = result.nextCursor
   } catch (reason) {
+    if (requestId !== assetLoadRequest) return
     error.value = reason instanceof Error ? reason.message : '相册加载失败'
   } finally {
+    if (requestId !== assetLoadRequest) return
     loading.value = false
     loadingMore.value = false
   }
@@ -99,15 +132,24 @@ async function loadFolders() {
 }
 
 async function loadMonths() {
+  if (galleryFilter.value === 'DELETED') {
+    months.value = []
+    return
+  }
   try {
-    months.value = (await timelineApi.months(scope.value, activeFolderId.value, searchQuery.value)).months
+    months.value = (await timelineApi.months(
+      scope.value,
+      activeFolderId.value,
+      searchQuery.value,
+      galleryFilter.value,
+    )).months
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '时间轴加载失败'
   }
 }
 
 function receiveAsset(asset: Asset) {
-  if (!activeFolderId.value && asset.visibility === scope.value) {
+  if (galleryFilter.value === 'ALL' && !activeFolderId.value && asset.visibility === scope.value) {
     void Promise.all([load(true), loadMonths()])
   }
 }
@@ -132,6 +174,7 @@ function assetRatio(asset: Asset): string {
 function leaveSelection() {
   selectionMode.value = false
   selectedIds.value = new Set()
+  bulkTagOpen.value = false
 }
 
 function toggleSelectionMode() {
@@ -152,17 +195,32 @@ function openAsset(assetId: string, index: number) {
 }
 
 function chooseFolder(folderId: string | null) {
+  galleryFilter.value = 'ALL'
   if (activeFolderId.value !== folderId) activeFolderId.value = folderId
 }
 
 function chooseView(next: 'TIMELINE' | 'GRID') {
+  galleryFilter.value = 'ALL'
   viewMode.value = next
   if (next === 'GRID') activeMonth.value = null
 }
 
 function chooseMonth(month: string | null) {
+  galleryFilter.value = 'ALL'
   viewMode.value = 'TIMELINE'
   activeMonth.value = month
+}
+
+function chooseLibraryFilter(filter: GalleryFilter) {
+  galleryFilter.value = filter
+  if (filter !== 'ALL') {
+    activeFolderId.value = null
+    activeMonth.value = null
+    viewMode.value = 'GRID'
+  }
+  viewerIndex.value = null
+  leaveSelection()
+  void Promise.all([load(true), loadMonths()])
 }
 
 function openFolderDialog() {
@@ -221,21 +279,32 @@ async function removeSelection() {
   }
 }
 
-async function updateSelection(changes: { visibility?: 'SHARED' | 'PRIVATE'; privacyMasked?: boolean }) {
-  if (selectedIds.value.size === 0) return
+async function updateSelection(changes: {
+  visibility?: 'SHARED' | 'PRIVATE'
+  privacyMasked?: boolean
+  favorite?: boolean
+  tags?: string[]
+  deleted?: boolean
+}) {
+  if (selectedIds.value.size === 0) return false
   assetUpdateBusy.value = true
   try {
     const result = await galleryApi.updateAssets([...selectedIds.value], changes)
     const movedOutOfScope = Boolean(changes.visibility && changes.visibility !== scope.value)
+    const needsReload = movedOutOfScope ||
+      Object.prototype.hasOwnProperty.call(changes, 'deleted') ||
+      (galleryFilter.value === 'FAVORITES' && changes.favorite === false)
     leaveSelection()
-    if (movedOutOfScope) {
+    if (needsReload) {
       await Promise.all([load(true), loadMonths(), loadFolders()])
     } else {
       mergeAssets(result.assets)
       await loadMonths()
     }
+    return true
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '照片状态修改失败'
+    return false
   } finally {
     assetUpdateBusy.value = false
   }
@@ -249,8 +318,57 @@ function updateSelectedVisibility(visibility: 'SHARED' | 'PRIVATE') {
   void updateSelection({ visibility })
 }
 
+function updateSelectedFavorite(favorite: boolean) {
+  void updateSelection({ favorite })
+}
+
+function cleanTagInput(value: string): string[] {
+  const seen = new Set<string>()
+  const tags: string[] = []
+  for (const rawTag of value.split(/[,，\n]/)) {
+    const tag = rawTag
+      .trim()
+      .normalize('NFC')
+      .replace(/[\u0000-\u001f]/g, '')
+      .replace(/\s+/g, ' ')
+      .slice(0, 24)
+    const key = tag.toLocaleLowerCase()
+    if (!tag || seen.has(key)) continue
+    seen.add(key)
+    tags.push(tag)
+    if (tags.length >= 10) break
+  }
+  return tags
+}
+
+function openBulkTagDialog() {
+  if (selectedIds.value.size === 0) return
+  bulkTagInput.value = ''
+  bulkTagOpen.value = true
+}
+
+async function saveBulkTags() {
+  const ok = await updateSelection({ tags: cleanTagInput(bulkTagInput.value) })
+  if (ok) bulkTagOpen.value = false
+}
+
+function moveSelectionToTrash() {
+  if (selectedIds.value.size === 0) return
+  if (!window.confirm(`将 ${selectedIds.value.size} 个项目移入最近删除？原文件会保留，可稍后恢复。`)) return
+  void updateSelection({ deleted: true })
+}
+
+function restoreSelection() {
+  void updateSelection({ deleted: false })
+}
+
 function handleViewerUpdated(updatedAsset: Asset) {
-  if (updatedAsset.visibility !== scope.value) {
+  const shouldRemove =
+    (galleryFilter.value !== 'DELETED' && updatedAsset.deletedAt) ||
+    (galleryFilter.value === 'DELETED' && !updatedAsset.deletedAt) ||
+    (galleryFilter.value === 'FAVORITES' && !updatedAsset.favorite) ||
+    (galleryFilter.value !== 'DELETED' && updatedAsset.visibility !== scope.value)
+  if (shouldRemove) {
     viewerIndex.value = null
     assets.value = assets.value.filter((asset) => asset.id !== updatedAsset.id)
     void Promise.all([loadMonths(), loadFolders()])
@@ -277,7 +395,7 @@ async function signOut() {
   emit('signedOut')
 }
 
-watch([scope, activeFolderId], () => {
+watch([scope, activeFolderId, galleryFilter], () => {
   leaveSelection()
   void loadMonths()
   if (activeMonth.value) activeMonth.value = null
@@ -328,11 +446,17 @@ onMounted(() => {
         <aside class="library-sidebar" aria-label="相册导航">
           <section class="sidebar-section">
             <span class="sidebar-label">图库</span>
-            <button :class="{ active: viewMode === 'TIMELINE' }" @click="chooseView('TIMELINE')">
+            <button :class="{ active: galleryFilter === 'ALL' && viewMode === 'TIMELINE' }" @click="chooseView('TIMELINE')">
               <CalendarDays :size="18" /><span>时间轴</span>
             </button>
-            <button :class="{ active: viewMode === 'GRID' }" @click="chooseView('GRID')">
+            <button :class="{ active: galleryFilter === 'ALL' && viewMode === 'GRID' }" @click="chooseView('GRID')">
               <Grid3X3 :size="18" /><span>照片墙</span>
+            </button>
+            <button data-gallery-filter="favorites" :class="{ active: galleryFilter === 'FAVORITES' }" @click="chooseLibraryFilter('FAVORITES')">
+              <Star :size="18" /><span>收藏</span>
+            </button>
+            <button data-gallery-filter="deleted" :class="{ active: galleryFilter === 'DELETED' }" @click="chooseLibraryFilter('DELETED')">
+              <Trash2 :size="18" /><span>最近删除</span>
             </button>
           </section>
 
@@ -341,7 +465,7 @@ onMounted(() => {
               <span class="sidebar-label">文件夹</span>
               <button class="sidebar-add" title="新建文件夹" @click="openFolderDialog"><FolderPlus :size="17" /></button>
             </div>
-            <button :class="{ active: !activeFolderId }" @click="chooseFolder(null)">
+            <button :class="{ active: galleryFilter === 'ALL' && !activeFolderId }" @click="chooseFolder(null)">
               <Images :size="18" /><span>全部照片</span>
             </button>
             <button v-for="folder in folders" :key="folder.id" :class="{ active: activeFolderId === folder.id }" @click="chooseFolder(folder.id)">
@@ -349,7 +473,7 @@ onMounted(() => {
             </button>
           </section>
 
-          <section v-if="viewMode === 'TIMELINE' && months.length" class="sidebar-section sidebar-months">
+          <section v-if="galleryFilter !== 'DELETED' && viewMode === 'TIMELINE' && months.length" class="sidebar-section sidebar-months">
             <span class="sidebar-label">时间</span>
             <button :class="{ active: !activeMonth }" @click="chooseMonth(null)"><span>全部时间</span></button>
             <button v-for="item in months" :key="item.month" :class="{ active: activeMonth === item.month }" @click="chooseMonth(item.month)">
@@ -360,8 +484,14 @@ onMounted(() => {
 
         <section class="gallery-content">
           <nav class="folder-tabs mobile-folder-tabs" aria-label="照片文件夹">
-            <button :class="{ active: !activeFolderId }" type="button" @click="chooseFolder(null)">
+            <button :class="{ active: galleryFilter === 'ALL' && !activeFolderId }" type="button" @click="chooseFolder(null)">
               <Images :size="17" /><span>全部照片</span>
+            </button>
+            <button data-gallery-filter="favorites" :class="{ active: galleryFilter === 'FAVORITES' }" type="button" @click="chooseLibraryFilter('FAVORITES')">
+              <Star :size="17" /><span>收藏</span>
+            </button>
+            <button data-gallery-filter="deleted" :class="{ active: galleryFilter === 'DELETED' }" type="button" @click="chooseLibraryFilter('DELETED')">
+              <Trash2 :size="17" /><span>最近删除</span>
             </button>
             <button v-for="folder in folders" :key="folder.id" :class="{ active: activeFolderId === folder.id }" type="button" @click="chooseFolder(folder.id)">
               <Folder :size="17" /><span>{{ folder.name }}</span><small>{{ folder.itemCount }}</small>
@@ -373,10 +503,10 @@ onMounted(() => {
 
           <div class="mobile-view-controls">
             <div class="segmented compact" aria-label="浏览方式">
-              <button :class="{ active: viewMode === 'TIMELINE' }" @click="chooseView('TIMELINE')"><CalendarDays :size="16" />时间轴</button>
-              <button :class="{ active: viewMode === 'GRID' }" @click="chooseView('GRID')"><Grid3X3 :size="16" />照片墙</button>
+              <button :class="{ active: galleryFilter === 'ALL' && viewMode === 'TIMELINE' }" @click="chooseView('TIMELINE')"><CalendarDays :size="16" />时间轴</button>
+              <button :class="{ active: galleryFilter === 'ALL' && viewMode === 'GRID' }" @click="chooseView('GRID')"><Grid3X3 :size="16" />照片墙</button>
             </div>
-            <label v-if="viewMode === 'TIMELINE'" class="month-select">
+            <label v-if="galleryFilter !== 'DELETED' && viewMode === 'TIMELINE'" class="month-select">
               <CalendarDays :size="17" />
               <select :value="activeMonth ?? ''" aria-label="选择月份" @change="chooseMonth(($event.target as HTMLSelectElement).value || null)">
                 <option value="">全部时间</option>
@@ -388,17 +518,17 @@ onMounted(() => {
           <div class="gallery-heading">
             <div class="gallery-title-row">
               <div>
-                <span class="eyebrow">{{ viewMode === 'TIMELINE' ? 'TIMELINE' : activeFolder ? 'PERSONAL FOLDER' : 'PHOTO GRID' }}</span>
+                <span class="eyebrow">{{ galleryFilter === 'FAVORITES' ? 'FAVORITES' : galleryFilter === 'DELETED' ? 'RECENTLY DELETED' : viewMode === 'TIMELINE' ? 'TIMELINE' : activeFolder ? 'PERSONAL FOLDER' : 'PHOTO GRID' }}</span>
                 <h1>{{ galleryTitle }}</h1>
               </div>
-              <button v-if="activeFolder" class="icon-button" type="button" title="删除文件夹" @click="deleteActiveFolder"><Trash2 :size="19" /></button>
+              <button v-if="activeFolder && galleryFilter === 'ALL'" class="icon-button" type="button" title="删除文件夹" @click="deleteActiveFolder"><Trash2 :size="19" /></button>
             </div>
             <form class="gallery-search" role="search" @submit.prevent="load(true)">
               <Search :size="17" />
               <input v-model="searchQuery" type="search" placeholder="搜索标签、上传者、照片/视频/实况" aria-label="搜索照片" />
               <button v-if="searchActive" type="button" title="清除搜索" @click="searchQuery = ''"><X :size="16" /></button>
             </form>
-            <div class="segmented scope-switch" aria-label="相册范围">
+            <div v-if="galleryFilter !== 'DELETED'" class="segmented scope-switch" aria-label="相册范围">
               <button :class="{ active: scope === 'SHARED' }" @click="scope = 'SHARED'">家庭共享</button>
               <button :class="{ active: scope === 'PRIVATE' }" @click="scope = 'PRIVATE'">仅自己</button>
             </div>
@@ -411,8 +541,8 @@ onMounted(() => {
           </div>
           <div v-else-if="assets.length === 0" class="gallery-state empty-state">
             <div class="empty-visual"><Images :size="44" /><Leaf :size="24" /></div>
-            <strong>{{ searchActive ? '没有匹配的照片' : activeMonth ? '这个月没有照片' : activeFolder ? '这个文件夹还是空的' : scope === 'SHARED' ? '家庭相册还是空的' : '这里留给自己的照片' }}</strong>
-            <span>{{ searchActive ? '换个标签、上传者或媒体类型再试。' : activeFolder ? '进入选择模式，将照片加入这个文件夹。' : '使用右上角的上传按钮添加第一批照片或视频。' }}</span>
+            <strong>{{ emptyTitle }}</strong>
+            <span>{{ emptyMessage }}</span>
           </div>
 
           <div v-else-if="viewMode === 'TIMELINE'" class="timeline-view">
@@ -455,13 +585,42 @@ onMounted(() => {
 
     <div v-if="selectionMode" class="selection-toolbar" role="toolbar" aria-label="照片整理">
       <strong>{{ selectedCount }} 个已选择</strong>
-      <button class="button button-primary" type="button" :disabled="selectedCount === 0" @click="openFolderDialog"><FolderInput :size="18" />加入文件夹</button>
-      <button v-if="activeFolder" class="button button-secondary" type="button" :disabled="selectedCount === 0 || folderBusy" @click="removeSelection"><FolderMinus :size="18" />移出</button>
-      <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="updateSelectedPrivacy(true)"><EyeOff :size="18" />设为防窥</button>
-      <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="updateSelectedPrivacy(false)"><Eye :size="18" />取消防窥</button>
-      <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="updateSelectedVisibility('PRIVATE')"><LockKeyhole :size="18" />仅自己</button>
-      <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="updateSelectedVisibility('SHARED')"><UsersRound :size="18" />家庭共享</button>
+      <template v-if="browsingDeleted">
+        <button class="button button-primary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="restoreSelection"><RotateCcw :size="18" />恢复</button>
+      </template>
+      <template v-else>
+        <button class="button button-primary" type="button" :disabled="selectedCount === 0" @click="openFolderDialog"><FolderInput :size="18" />加入文件夹</button>
+        <button v-if="activeFolder" class="button button-secondary" type="button" :disabled="selectedCount === 0 || folderBusy" @click="removeSelection"><FolderMinus :size="18" />移出</button>
+        <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="openBulkTagDialog"><Tags :size="18" />批量标签</button>
+        <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="updateSelectedFavorite(true)"><Star :size="18" />收藏</button>
+        <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="updateSelectedFavorite(false)"><Star :size="18" />取消收藏</button>
+        <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="updateSelectedPrivacy(true)"><EyeOff :size="18" />设为防窥</button>
+        <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="updateSelectedPrivacy(false)"><Eye :size="18" />取消防窥</button>
+        <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="updateSelectedVisibility('PRIVATE')"><LockKeyhole :size="18" />仅自己</button>
+        <button class="button button-secondary" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="updateSelectedVisibility('SHARED')"><UsersRound :size="18" />家庭共享</button>
+        <button class="button button-secondary danger-action" type="button" :disabled="selectedCount === 0 || assetUpdateBusy" @click="moveSelectionToTrash"><Trash2 :size="18" />删除</button>
+      </template>
       <button class="icon-button" type="button" title="取消选择" @click="leaveSelection"><X :size="20" /></button>
+    </div>
+
+    <div v-if="bulkTagOpen" class="modal-backdrop" role="dialog" aria-modal="true" aria-label="批量设置标签">
+      <form class="bulk-tag-dialog" @submit.prevent="saveBulkTags">
+        <header class="panel-header">
+          <div>
+            <span class="eyebrow">TAGS</span>
+            <h2>批量标签</h2>
+          </div>
+          <button class="icon-button" type="button" title="关闭" @click="bulkTagOpen = false"><X :size="20" /></button>
+        </header>
+        <div class="bulk-tag-body">
+          <p>将覆盖 {{ selectedCount }} 个已选项目的标签。用逗号、中文逗号或换行分隔，最多 10 个。</p>
+          <textarea v-model="bulkTagInput" rows="5" placeholder="旅行&#10;家人&#10;生日" :disabled="assetUpdateBusy"></textarea>
+          <div class="bulk-tag-actions">
+            <button class="button button-primary" type="submit" :disabled="assetUpdateBusy">保存标签</button>
+            <button class="button button-secondary" type="button" :disabled="assetUpdateBusy" @click="bulkTagOpen = false">取消</button>
+          </div>
+        </div>
+      </form>
     </div>
 
     <FolderDialog

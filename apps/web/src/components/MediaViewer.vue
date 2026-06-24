@@ -12,7 +12,9 @@ import {
   LockKeyhole,
   Play,
   RotateCcw,
+  Star,
   Tags,
+  Trash2,
   UsersRound,
   X,
 } from 'lucide-vue-next'
@@ -39,6 +41,7 @@ const isPrivacyHidden = computed(() => Boolean(asset.value?.privacyMasked && !pr
 const canManage = computed(() => Boolean(
   asset.value && (props.currentUser.role === 'ADMIN' || asset.value.ownerId === props.currentUser.id),
 ))
+const canFavorite = computed(() => Boolean(asset.value && !asset.value.deletedAt))
 const typeLabel = computed(() => {
   if (asset.value?.type === 'VIDEO') return '视频'
   if (asset.value?.type === 'LIVE_PHOTO') return '实况照片'
@@ -46,6 +49,7 @@ const typeLabel = computed(() => {
 })
 const visibilityLabel = computed(() => asset.value?.visibility === 'SHARED' ? '家庭共享' : '仅自己可见')
 const privacyLabel = computed(() => asset.value?.privacyMasked ? '防窥遮挡' : '普通显示')
+const favoriteLabel = computed(() => asset.value?.favorite ? '已收藏' : '未收藏')
 const displayTitle = computed(() => {
   if (!asset.value) return ''
   return asset.value.tags.length > 0 ? asset.value.tags.join(' · ') : '未设置标签'
@@ -122,8 +126,16 @@ function revealPrivacy() {
   privacyRevealed.value = true
 }
 
-async function updateAsset(changes: { visibility?: 'SHARED' | 'PRIVATE'; privacyMasked?: boolean; tags?: string[] }): Promise<boolean> {
-  if (!asset.value || !canManage.value) return false
+async function updateAsset(changes: {
+  visibility?: 'SHARED' | 'PRIVATE'
+  privacyMasked?: boolean
+  favorite?: boolean
+  tags?: string[]
+  deleted?: boolean
+}): Promise<boolean> {
+  const favoriteOnly = Object.prototype.hasOwnProperty.call(changes, 'favorite') &&
+    Object.keys(changes).every((key) => key === 'favorite')
+  if (!asset.value || (!canManage.value && !favoriteOnly)) return false
   saving.value = true
   actionError.value = ''
   try {
@@ -204,6 +216,17 @@ watch(() => asset.value?.id, () => {
       >
         <Film :size="20" />
       </a>
+      <button
+        v-if="canFavorite"
+        class="icon-button viewer-action"
+        type="button"
+        :class="{ active: asset.favorite }"
+        :title="asset.favorite ? '取消收藏' : '收藏'"
+        :disabled="saving"
+        @click="updateAsset({ favorite: !asset.favorite })"
+      >
+        <Star :size="20" :fill="asset.favorite ? 'currentColor' : 'none'" />
+      </button>
       <button class="icon-button viewer-action" type="button" :class="{ active: infoOpen }" title="照片信息" @click="infoOpen = !infoOpen">
         <Info :size="20" />
       </button>
@@ -310,6 +333,8 @@ watch(() => asset.value?.id, () => {
         <div><dt>上传者</dt><dd>{{ asset.ownerName }}</dd></div>
         <div><dt>可见范围</dt><dd>{{ visibilityLabel }}</dd></div>
         <div><dt>隐私遮挡</dt><dd>{{ privacyLabel }}</dd></div>
+        <div><dt>收藏</dt><dd>{{ favoriteLabel }}</dd></div>
+        <div v-if="asset.deletedAt"><dt>删除时间</dt><dd>{{ formatDate(asset.deletedAt) }}</dd></div>
       </dl>
       <form v-if="canManage && tagEditing" class="viewer-tag-editor" @submit.prevent="saveTags">
         <label for="asset-tags-input">编辑标签</label>
@@ -326,6 +351,12 @@ watch(() => asset.value?.id, () => {
           <button class="button button-secondary" type="button" :disabled="saving" @click="cancelTagEdit">取消</button>
         </div>
       </form>
+      <div v-if="canFavorite" class="viewer-info-actions">
+        <button class="button button-secondary" type="button" :disabled="saving" @click="updateAsset({ favorite: !asset.favorite })">
+          <Star :size="17" :fill="asset.favorite ? 'currentColor' : 'none'" />
+          {{ asset.favorite ? '取消收藏' : '收藏' }}
+        </button>
+      </div>
       <div v-if="canManage" class="viewer-info-actions">
         <button class="button button-secondary" type="button" :disabled="saving" @click="startTagEdit">
           <Tags :size="17" />
@@ -340,6 +371,16 @@ watch(() => asset.value?.id, () => {
           <LockKeyhole v-if="asset.visibility === 'SHARED'" :size="17" />
           <UsersRound v-else :size="17" />
           {{ asset.visibility === 'SHARED' ? '设为仅自己' : '设为家庭共享' }}
+        </button>
+        <button
+          class="button button-secondary"
+          type="button"
+          :disabled="saving"
+          @click="updateAsset({ deleted: !asset.deletedAt })"
+        >
+          <RotateCcw v-if="asset.deletedAt" :size="17" />
+          <Trash2 v-else :size="17" />
+          {{ asset.deletedAt ? '恢复照片' : '移入最近删除' }}
         </button>
       </div>
       <p v-else class="viewer-info-note">只有上传者或管理员可以修改照片状态。</p>
@@ -360,6 +401,8 @@ watch(() => asset.value?.id, () => {
       <span>{{ asset.type === 'VIDEO' ? '视频' : asset.type === 'LIVE_PHOTO' ? '实况照片' : '照片' }}</span>
       <span>{{ formatBytes(asset.sizeBytes) }}</span>
       <span>{{ asset.visibility === 'SHARED' ? '家庭共享' : '仅自己可见' }}</span>
+      <span v-if="asset.favorite" class="single-copy">收藏</span>
+      <span v-if="asset.deletedAt" class="single-copy">最近删除</span>
       <span v-if="asset.privacyMasked" class="single-copy">防窥</span>
       <span class="single-copy">仅 1 个副本</span>
     </footer>

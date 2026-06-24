@@ -6,6 +6,8 @@ import sharp from 'sharp'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createApp } from './app.js'
 
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
 describe('MintGallery API', () => {
   let app: FastifyInstance
   let directory: string
@@ -194,6 +196,20 @@ describe('MintGallery API', () => {
     expect(search.json().assets).toHaveLength(1)
     expect(search.json().assets[0]).toMatchObject({ id: asset.id, privacyMasked: true })
 
+    const maskedPhotos = await app.inject({
+      method: 'GET',
+      url: '/api/assets?scope=SHARED&mediaType=IMAGE&smartFilter=PRIVACY_MASKED',
+      headers: { cookie: memberCookie },
+    })
+    expect(maskedPhotos.json().assets.map((item: { id: string }) => item.id)).toEqual([asset.id])
+
+    const untagged = await app.inject({
+      method: 'GET',
+      url: '/api/assets?scope=SHARED&smartFilter=UNTAGGED',
+      headers: { cookie: memberCookie },
+    })
+    expect(untagged.json().assets).toHaveLength(0)
+
     const favorited = await app.inject({
       method: 'PATCH',
       url: `/api/assets/${asset.id}`,
@@ -327,8 +343,9 @@ describe('MintGallery API', () => {
       })
     }
 
-    const older = await uploadDatedPhoto('winter.jpg', '2024:01:10 08:30:00')
     const newer = await uploadDatedPhoto('summer.jpg', '2024:06:20 18:45:00')
+    await delay(5)
+    const older = await uploadDatedPhoto('winter.jpg', '2024:01:10 08:30:00')
     expect(older.statusCode).toBe(201)
     expect(newer.statusCode).toBe(201)
     expect(newer.json().asset.shootingTime).toContain('2024-06-20')
@@ -342,6 +359,23 @@ describe('MintGallery API', () => {
       'summer.jpg',
       'winter.jpg',
     ])
+
+    const recentImports = await app.inject({
+      method: 'GET',
+      url: '/api/assets?scope=PRIVATE&smartFilter=RECENT_IMPORTS',
+      headers: { cookie },
+    })
+    expect(recentImports.json().assets.map((asset: { originalName: string }) => asset.originalName)).toEqual([
+      'winter.jpg',
+      'summer.jpg',
+    ])
+
+    const untaggedImages = await app.inject({
+      method: 'GET',
+      url: '/api/assets?scope=PRIVATE&mediaType=IMAGE&smartFilter=UNTAGGED',
+      headers: { cookie },
+    })
+    expect(untaggedImages.json().assets).toHaveLength(2)
 
     const months = await app.inject({
       method: 'GET',

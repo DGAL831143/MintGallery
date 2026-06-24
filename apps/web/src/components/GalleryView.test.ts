@@ -162,4 +162,29 @@ describe('GalleryView filters', () => {
 
     expect(renderedIds(wrapper)).toEqual([filteredAsset.id])
   })
+
+  it('passes browsing quick filters to the gallery request and changes grid density', async () => {
+    listMock.mockResolvedValue({ assets: [asset('visible-asset')], nextCursor: null })
+
+    const wrapper = mountGallery()
+    await flushPromises()
+
+    await wrapper.find('[data-media-filter="video"]').trigger('click')
+    await flushPromises()
+
+    expect(listMock.mock.calls.at(-1)?.[6]).toBe('VIDEO')
+    expect(listMock.mock.calls.at(-1)?.[7]).toBe('ALL')
+
+    await wrapper.find('[data-smart-filter="untagged"]').trigger('click')
+    await flushPromises()
+
+    expect(listMock.mock.calls.at(-1)?.[6]).toBe('VIDEO')
+    expect(listMock.mock.calls.at(-1)?.[7]).toBe('UNTAGGED')
+
+    await wrapper.find('[data-density="compact"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.media-grid').classes()).toContain('media-grid-compact')
+    expect(renderedIds(wrapper)).toEqual(['visible-asset'])
+  })
 })

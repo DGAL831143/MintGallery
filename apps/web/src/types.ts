@@ -40,6 +40,12 @@ export interface TimelineMonth {
   count: number
 }
 
+export type MediaTypeFilter = 'ALL' | 'IMAGE' | 'VIDEO' | 'LIVE_PHOTO'
+
+export type SmartFilter = 'ALL' | 'RECENT_IMPORTS' | 'UNTAGGED' | 'PRIVACY_MASKED'
+
+export type GridDensity = 'COMFORTABLE' | 'STANDARD' | 'COMPACT'
+
 export interface Folder {
   id: string
   name: string

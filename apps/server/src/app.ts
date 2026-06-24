@@ -136,6 +136,19 @@ function validGalleryFilter(value: unknown): value is 'ALL' | 'FAVORITES' | 'DEL
   return value === 'ALL' || value === 'FAVORITES' || value === 'DELETED'
 }
 
+function validMediaTypeFilter(value: unknown): value is 'ALL' | AssetRow['type'] {
+  return value === 'ALL' || value === 'IMAGE' || value === 'VIDEO' || value === 'LIVE_PHOTO'
+}
+
+function validSmartFilter(
+  value: unknown,
+): value is 'ALL' | 'RECENT_IMPORTS' | 'UNTAGGED' | 'PRIVACY_MASKED' {
+  return value === 'ALL' ||
+    value === 'RECENT_IMPORTS' ||
+    value === 'UNTAGGED' ||
+    value === 'PRIVACY_MASKED'
+}
+
 function cleanSearchQuery(value: unknown): string {
   return typeof value === 'string' ? value.trim().normalize('NFC').slice(0, 80) : ''
 }
@@ -364,7 +377,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.7.2' }))
+  app.get('/api/health', async () => ({ ok: true, version: '0.8.0' }))
 
   app.get('/api/bootstrap/status', async () => {
     const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }
@@ -974,6 +987,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       month?: string
       q?: string
       filter?: string
+      mediaType?: string
+      smartFilter?: string
     }
     const scope = query.scope ?? 'SHARED'
     if (scope !== 'SHARED' && scope !== 'PRIVATE') {
@@ -982,6 +997,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const filter = query.filter ?? 'ALL'
     if (!validGalleryFilter(filter)) {
       return reply.code(400).send({ message: '图库筛选无效' })
+    }
+    const mediaType = query.mediaType ?? 'ALL'
+    if (!validMediaTypeFilter(mediaType)) {
+      return reply.code(400).send({ message: '媒体类型筛选无效' })
+    }
+    const smartFilter = query.smartFilter ?? 'ALL'
+    if (!validSmartFilter(smartFilter)) {
+      return reply.code(400).send({ message: '整理筛选无效' })
     }
     if (query.month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(query.month)) {
       return reply.code(400).send({ message: '月份格式无效' })
@@ -1001,7 +1024,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     }
 
-    const sortExpression = filter === 'DELETED' ? 'a.deleted_at' : 'COALESCE(a.shooting_time, a.uploaded_at)'
+    const sortExpression = filter === 'DELETED'
+      ? 'a.deleted_at'
+      : smartFilter === 'RECENT_IMPORTS'
+        ? 'a.uploaded_at'
+        : 'COALESCE(a.shooting_time, a.uploaded_at)'
     const conditions = filter === 'DELETED'
       ? ['a.deleted_at IS NOT NULL']
       : scope === 'SHARED'
@@ -1016,6 +1043,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     if (filter === 'FAVORITES') {
       conditions.push('a.favorite = 1')
+    }
+    if (mediaType !== 'ALL') {
+      conditions.push('a.type = ?')
+      parameters.push(mediaType)
+    }
+    if (smartFilter === 'UNTAGGED') {
+      conditions.push("a.tags = '[]'")
+    }
+    if (smartFilter === 'PRIVACY_MASKED') {
+      conditions.push('a.privacy_masked = 1')
     }
     if (query.folderId && filter !== 'DELETED') {
       const folder = database.prepare('SELECT id FROM folders WHERE id = ? AND owner_id = ?')

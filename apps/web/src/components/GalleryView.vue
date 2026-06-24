@@ -3,13 +3,16 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   CalendarDays,
   CircleAlert,
+  Clock3,
   Eye,
   EyeOff,
+  Film,
   Folder,
   FolderInput,
   FolderMinus,
   FolderPlus,
   Grid3X3,
+  Image,
   Images,
   Leaf,
   ListChecks,
@@ -20,6 +23,7 @@ import {
   Search,
   Settings,
   ShieldAlert,
+  Sparkles,
   Star,
   Tags,
   Trash2,
@@ -29,7 +33,15 @@ import {
 } from 'lucide-vue-next'
 import { authApi, folderApi, galleryApi, timelineApi } from '../api'
 import { formatMonth, groupTimelineAssets } from '../timeline'
-import type { Asset, Folder as GalleryFolder, TimelineMonth, User } from '../types'
+import type {
+  Asset,
+  Folder as GalleryFolder,
+  GridDensity,
+  MediaTypeFilter,
+  SmartFilter,
+  TimelineMonth,
+  User,
+} from '../types'
 import AdminPanel from './AdminPanel.vue'
 import FolderDialog from './FolderDialog.vue'
 import MediaTile from './MediaTile.vue'
@@ -42,6 +54,9 @@ type GalleryFilter = 'ALL' | 'FAVORITES' | 'DELETED'
 const scope = ref<'SHARED' | 'PRIVATE'>('SHARED')
 const viewMode = ref<'TIMELINE' | 'GRID'>('TIMELINE')
 const galleryFilter = ref<GalleryFilter>('ALL')
+const mediaTypeFilter = ref<MediaTypeFilter>('ALL')
+const smartFilter = ref<SmartFilter>('ALL')
+const gridDensity = ref<GridDensity>('STANDARD')
 const assets = ref<Asset[]>([])
 const folders = ref<GalleryFolder[]>([])
 const months = ref<TimelineMonth[]>([])
@@ -71,14 +86,28 @@ const scopeTitle = computed(() => activeFolder.value?.name ?? (scope.value === '
 const galleryTitle = computed(() => {
   if (galleryFilter.value === 'FAVORITES') return '收藏'
   if (galleryFilter.value === 'DELETED') return '最近删除'
+  if (smartFilter.value === 'RECENT_IMPORTS') return '最近导入'
+  if (smartFilter.value === 'UNTAGGED') return '待整理'
+  if (smartFilter.value === 'PRIVACY_MASKED') return '防窥照片'
+  if (mediaTypeFilter.value === 'IMAGE') return '照片'
+  if (mediaTypeFilter.value === 'VIDEO') return '视频'
+  if (mediaTypeFilter.value === 'LIVE_PHOTO') return '实况照片'
   return activeMonth.value ? formatMonth(activeMonth.value) : scopeTitle.value
 })
 const searchActive = computed(() => searchQuery.value.trim().length > 0)
 const browsingDeleted = computed(() => galleryFilter.value === 'DELETED')
+const quickFilterActive = computed(() => mediaTypeFilter.value !== 'ALL' || smartFilter.value !== 'ALL')
+const gridDensityClass = computed(() => `media-grid-${gridDensity.value.toLowerCase().replace('_', '-')}`)
 const emptyTitle = computed(() => {
   if (searchActive.value) return '没有匹配的照片'
   if (galleryFilter.value === 'FAVORITES') return '还没有收藏照片'
   if (galleryFilter.value === 'DELETED') return '最近删除为空'
+  if (smartFilter.value === 'RECENT_IMPORTS') return '还没有最近导入'
+  if (smartFilter.value === 'UNTAGGED') return '没有待整理照片'
+  if (smartFilter.value === 'PRIVACY_MASKED') return '没有防窥照片'
+  if (mediaTypeFilter.value === 'VIDEO') return '没有视频'
+  if (mediaTypeFilter.value === 'LIVE_PHOTO') return '没有实况照片'
+  if (mediaTypeFilter.value === 'IMAGE') return '没有照片'
   if (activeMonth.value) return '这个月没有照片'
   if (activeFolder.value) return '这个文件夹还是空的'
   return scope.value === 'SHARED' ? '家庭相册还是空的' : '这里留给自己的照片'
@@ -87,6 +116,10 @@ const emptyMessage = computed(() => {
   if (searchActive.value) return '换个标签、上传者或媒体类型再试。'
   if (galleryFilter.value === 'FAVORITES') return '在照片墙或查看器中点亮星标后，会出现在这里。'
   if (galleryFilter.value === 'DELETED') return '被删除的照片会先进入这里，原文件仍保留在电脑中。'
+  if (smartFilter.value === 'RECENT_IMPORTS') return '上传或外部导入后会按导入时间出现在这里。'
+  if (smartFilter.value === 'UNTAGGED') return '这里会显示还没有标签的项目，适合集中整理。'
+  if (smartFilter.value === 'PRIVACY_MASKED') return '设置为防窥后会在这里集中查看。'
+  if (mediaTypeFilter.value !== 'ALL') return '切换媒体类型或相册范围后再查看。'
   if (activeFolder.value) return '进入选择模式，将照片加入这个文件夹。'
   return '使用右上角的上传按钮添加第一批照片或视频。'
 })
@@ -109,6 +142,8 @@ async function load(reset = true) {
       activeMonth.value,
       searchQuery.value,
       galleryFilter.value,
+      mediaTypeFilter.value,
+      smartFilter.value,
     )
     if (requestId !== assetLoadRequest) return
     assets.value = reset ? result.assets : [...assets.value, ...result.assets]
@@ -199,20 +234,28 @@ function chooseFolder(folderId: string | null) {
   if (activeFolderId.value !== folderId) activeFolderId.value = folderId
 }
 
+function resetBrowsingFilters() {
+  mediaTypeFilter.value = 'ALL'
+  smartFilter.value = 'ALL'
+}
+
 function chooseView(next: 'TIMELINE' | 'GRID') {
   galleryFilter.value = 'ALL'
   viewMode.value = next
   if (next === 'GRID') activeMonth.value = null
+  else resetBrowsingFilters()
 }
 
 function chooseMonth(month: string | null) {
   galleryFilter.value = 'ALL'
+  resetBrowsingFilters()
   viewMode.value = 'TIMELINE'
   activeMonth.value = month
 }
 
 function chooseLibraryFilter(filter: GalleryFilter) {
   galleryFilter.value = filter
+  resetBrowsingFilters()
   if (filter !== 'ALL') {
     activeFolderId.value = null
     activeMonth.value = null
@@ -221,6 +264,24 @@ function chooseLibraryFilter(filter: GalleryFilter) {
   viewerIndex.value = null
   leaveSelection()
   void Promise.all([load(true), loadMonths()])
+}
+
+function applyMediaTypeFilter(filter: MediaTypeFilter) {
+  galleryFilter.value = 'ALL'
+  mediaTypeFilter.value = filter
+  viewMode.value = 'GRID'
+  activeMonth.value = null
+  viewerIndex.value = null
+  leaveSelection()
+}
+
+function applySmartFilter(filter: SmartFilter) {
+  galleryFilter.value = 'ALL'
+  smartFilter.value = filter
+  viewMode.value = 'GRID'
+  activeMonth.value = null
+  viewerIndex.value = null
+  leaveSelection()
 }
 
 function openFolderDialog() {
@@ -395,7 +456,7 @@ async function signOut() {
   emit('signedOut')
 }
 
-watch([scope, activeFolderId, galleryFilter], () => {
+watch([scope, activeFolderId, galleryFilter, mediaTypeFilter, smartFilter], () => {
   leaveSelection()
   void loadMonths()
   if (activeMonth.value) activeMonth.value = null
@@ -534,6 +595,44 @@ onMounted(() => {
             </div>
           </div>
 
+          <div v-if="galleryFilter !== 'DELETED'" class="browse-controls" :class="{ active: quickFilterActive }">
+            <div class="filter-cluster" aria-label="媒体类型">
+              <button data-media-filter="all" :class="{ active: mediaTypeFilter === 'ALL' }" type="button" @click="applyMediaTypeFilter('ALL')">
+                <Images :size="16" /><span>全部</span>
+              </button>
+              <button data-media-filter="image" :class="{ active: mediaTypeFilter === 'IMAGE' }" type="button" @click="applyMediaTypeFilter('IMAGE')">
+                <Image :size="16" /><span>照片</span>
+              </button>
+              <button data-media-filter="video" :class="{ active: mediaTypeFilter === 'VIDEO' }" type="button" @click="applyMediaTypeFilter('VIDEO')">
+                <Film :size="16" /><span>视频</span>
+              </button>
+              <button data-media-filter="live" :class="{ active: mediaTypeFilter === 'LIVE_PHOTO' }" type="button" @click="applyMediaTypeFilter('LIVE_PHOTO')">
+                <Sparkles :size="16" /><span>实况</span>
+              </button>
+            </div>
+
+            <div class="filter-cluster" aria-label="整理状态">
+              <button data-smart-filter="all" :class="{ active: smartFilter === 'ALL' }" type="button" @click="applySmartFilter('ALL')">
+                <Grid3X3 :size="16" /><span>全部</span>
+              </button>
+              <button data-smart-filter="recent" :class="{ active: smartFilter === 'RECENT_IMPORTS' }" type="button" @click="applySmartFilter('RECENT_IMPORTS')">
+                <Clock3 :size="16" /><span>最近导入</span>
+              </button>
+              <button data-smart-filter="untagged" :class="{ active: smartFilter === 'UNTAGGED' }" type="button" @click="applySmartFilter('UNTAGGED')">
+                <Tags :size="16" /><span>待整理</span>
+              </button>
+              <button data-smart-filter="masked" :class="{ active: smartFilter === 'PRIVACY_MASKED' }" type="button" @click="applySmartFilter('PRIVACY_MASKED')">
+                <EyeOff :size="16" /><span>防窥</span>
+              </button>
+            </div>
+
+            <div v-if="viewMode === 'GRID'" class="filter-cluster density-cluster" aria-label="照片墙密度">
+              <button data-density="comfortable" :class="{ active: gridDensity === 'COMFORTABLE' }" type="button" @click="gridDensity = 'COMFORTABLE'">大图</button>
+              <button data-density="standard" :class="{ active: gridDensity === 'STANDARD' }" type="button" @click="gridDensity = 'STANDARD'">标准</button>
+              <button data-density="compact" :class="{ active: gridDensity === 'COMPACT' }" type="button" @click="gridDensity = 'COMPACT'">紧凑</button>
+            </div>
+          </div>
+
           <div v-if="loading" class="gallery-state"><LoaderCircle class="spin" :size="28" /><span>正在整理照片</span></div>
           <div v-else-if="error" class="gallery-state error-state">
             <CircleAlert :size="28" /><strong>相册暂时打不开</strong><span>{{ error }}</span>
@@ -562,7 +661,7 @@ onMounted(() => {
             </section>
           </div>
 
-          <section v-else class="media-grid" aria-label="照片墙">
+          <section v-else class="media-grid" :class="gridDensityClass" aria-label="照片墙">
             <MediaTile
               v-for="(asset, index) in assets"
               :key="asset.id"

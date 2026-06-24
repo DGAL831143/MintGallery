@@ -3,6 +3,8 @@ import type {
   Folder,
   ImportRunResult,
   ImportScanResult,
+  MediaTypeFilter,
+  SmartFilter,
   StorageSummary,
   TimelineMonth,
   User,
@@ -68,6 +70,8 @@ export const galleryApi = {
     month?: string | null,
     query?: string | null,
     filter: 'ALL' | 'FAVORITES' | 'DELETED' = 'ALL',
+    mediaType: MediaTypeFilter = 'ALL',
+    smartFilter: SmartFilter = 'ALL',
   ) => {
     const search = new URLSearchParams({ scope, limit: '30' })
     if (cursor) search.set('cursor', cursor)
@@ -75,6 +79,8 @@ export const galleryApi = {
     if (month) search.set('month', month)
     if (query?.trim()) search.set('q', query.trim())
     if (filter !== 'ALL') search.set('filter', filter)
+    if (mediaType !== 'ALL') search.set('mediaType', mediaType)
+    if (smartFilter !== 'ALL') search.set('smartFilter', smartFilter)
     return api<{ assets: Asset[]; nextCursor: string | null }>(`/api/assets?${search}`)
   },
   updateAsset: (

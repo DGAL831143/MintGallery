@@ -456,21 +456,35 @@ describe('MintGallery API', () => {
     expect(collections.statusCode).toBe(200)
     type CollectionResponse = {
       id: string
+      title: string
       count: number
       filter: string
+      mediaType: string
       smartFilter: string
       covers: Array<{ id: string; privacyMasked: boolean }>
     }
+    expect(collections.json().collections.map((item: CollectionResponse) => item.id)).toEqual([
+      'TODAY_IN_HISTORY',
+      'THIS_MONTH_HISTORY',
+    ])
     const byId = new Map<string, CollectionResponse>(
       collections.json().collections.map((item: CollectionResponse) => [item.id, item]),
     )
-    expect(byId.get('RECENT_IMPORTS')).toMatchObject({ count: 2, smartFilter: 'RECENT_IMPORTS' })
-    expect(byId.get('UNTAGGED')).toMatchObject({ count: 1, smartFilter: 'UNTAGGED' })
-    expect(byId.get('FAVORITES')).toMatchObject({ count: 1, filter: 'FAVORITES' })
-    expect(byId.get('PRIVACY_MASKED')).toMatchObject({ count: 1, smartFilter: 'PRIVACY_MASKED' })
-    expect(byId.get('TODAY_IN_HISTORY')).toMatchObject({ count: 1, smartFilter: 'TODAY_IN_HISTORY' })
-    expect(byId.get('THIS_MONTH_HISTORY')).toMatchObject({ count: 1, smartFilter: 'THIS_MONTH_HISTORY' })
-    expect(byId.get('FAVORITES').covers[0]).toMatchObject({ id: memoryAsset.id, privacyMasked: true })
+    expect(byId.get('TODAY_IN_HISTORY')).toMatchObject({
+      title: '今日往年',
+      count: 1,
+      filter: 'ALL',
+      mediaType: 'ALL',
+      smartFilter: 'TODAY_IN_HISTORY',
+    })
+    expect(byId.get('THIS_MONTH_HISTORY')).toMatchObject({
+      title: '回忆',
+      count: 1,
+      filter: 'ALL',
+      mediaType: 'ALL',
+      smartFilter: 'THIS_MONTH_HISTORY',
+    })
+    expect(byId.get('TODAY_IN_HISTORY')?.covers[0]).toMatchObject({ id: memoryAsset.id, privacyMasked: true })
 
     const todayInHistory = await app.inject({
       method: 'GET',

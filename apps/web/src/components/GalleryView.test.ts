@@ -136,32 +136,32 @@ describe('GalleryView filters', () => {
     monthsMock.mockResolvedValue({ months: [] })
   })
 
-  it('renders featured collections and opens one as a filtered grid', async () => {
-    const liveAsset = asset('live-asset', { type: 'LIVE_PHOTO' })
+  it('renders memory featured collections and opens one as a filtered grid', async () => {
+    const memoryAsset = asset('memory-asset')
     collectionsMock.mockResolvedValue({
       collections: [
-        collection('LIVE_PHOTOS', {
-          title: '实况照片',
-          mediaType: 'LIVE_PHOTO',
-          covers: [liveAsset],
+        collection('TODAY_IN_HISTORY', {
+          title: '今日往年',
+          smartFilter: 'TODAY_IN_HISTORY',
+          covers: [memoryAsset],
         }),
       ],
     })
-    listMock.mockResolvedValue({ assets: [liveAsset], nextCursor: null })
+    listMock.mockResolvedValue({ assets: [memoryAsset], nextCursor: null })
 
     const wrapper = mountGallery()
     await flushPromises()
 
-    const card = wrapper.find('[data-featured-collection="LIVE_PHOTOS"]')
+    const card = wrapper.find('[data-featured-collection="TODAY_IN_HISTORY"]')
     expect(card.exists()).toBe(true)
 
     await card.trigger('click')
     await flushPromises()
 
-    expect(listMock.mock.calls.at(-1)?.[6]).toBe('LIVE_PHOTO')
-    expect(listMock.mock.calls.at(-1)?.[7]).toBe('ALL')
+    expect(listMock.mock.calls.at(-1)?.[6]).toBe('ALL')
+    expect(listMock.mock.calls.at(-1)?.[7]).toBe('TODAY_IN_HISTORY')
     expect(wrapper.find('.featured-grid').exists()).toBe(false)
-    expect(renderedIds(wrapper)).toEqual(['live-asset'])
+    expect(renderedIds(wrapper)).toEqual(['memory-asset'])
   })
 
   it.each([

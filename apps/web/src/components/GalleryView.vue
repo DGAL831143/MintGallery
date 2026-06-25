@@ -86,12 +86,6 @@ let assetLoadRequest = 0
 let collectionLoadRequest = 0
 
 const collectionIcons: Record<FeaturedCollection['id'], Component> = {
-  RECENT_IMPORTS: Clock3,
-  UNTAGGED: Tags,
-  FAVORITES: Star,
-  LIVE_PHOTOS: Sparkles,
-  VIDEOS: Film,
-  PRIVACY_MASKED: EyeOff,
   TODAY_IN_HISTORY: CalendarDays,
   THIS_MONTH_HISTORY: Images,
 }

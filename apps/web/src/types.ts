@@ -55,15 +55,7 @@ export type GridDensity = 'COMFORTABLE' | 'STANDARD' | 'COMPACT'
 export type GalleryFilter = 'ALL' | 'FAVORITES' | 'DELETED'
 
 export interface FeaturedCollection {
-  id:
-    | 'RECENT_IMPORTS'
-    | 'UNTAGGED'
-    | 'FAVORITES'
-    | 'LIVE_PHOTOS'
-    | 'VIDEOS'
-    | 'PRIVACY_MASKED'
-    | 'TODAY_IN_HISTORY'
-    | 'THIS_MONTH_HISTORY'
+  id: 'TODAY_IN_HISTORY' | 'THIS_MONTH_HISTORY'
   title: string
   subtitle: string
   count: number

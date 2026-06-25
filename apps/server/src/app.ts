@@ -113,7 +113,7 @@ type SmartFilter =
   | 'THIS_MONTH_HISTORY'
 
 interface FeaturedCollectionDefinition {
-  id: Exclude<SmartFilter, 'ALL'> | 'FAVORITES' | 'LIVE_PHOTOS' | 'VIDEOS'
+  id: 'TODAY_IN_HISTORY' | 'THIS_MONTH_HISTORY'
   title: string
   subtitle: string
   filter: GalleryFilter
@@ -122,54 +122,6 @@ interface FeaturedCollectionDefinition {
 }
 
 const featuredCollectionDefinitions: FeaturedCollectionDefinition[] = [
-  {
-    id: 'RECENT_IMPORTS',
-    title: '最近导入',
-    subtitle: '刚上传和刚导入的照片',
-    filter: 'ALL',
-    mediaType: 'ALL',
-    smartFilter: 'RECENT_IMPORTS',
-  },
-  {
-    id: 'UNTAGGED',
-    title: '待整理',
-    subtitle: '还没有标签的项目',
-    filter: 'ALL',
-    mediaType: 'ALL',
-    smartFilter: 'UNTAGGED',
-  },
-  {
-    id: 'FAVORITES',
-    title: '收藏',
-    subtitle: '已点亮星标的照片',
-    filter: 'FAVORITES',
-    mediaType: 'ALL',
-    smartFilter: 'ALL',
-  },
-  {
-    id: 'LIVE_PHOTOS',
-    title: '实况照片',
-    subtitle: '包含动态片段的照片',
-    filter: 'ALL',
-    mediaType: 'LIVE_PHOTO',
-    smartFilter: 'ALL',
-  },
-  {
-    id: 'VIDEOS',
-    title: '视频',
-    subtitle: '普通视频文件',
-    filter: 'ALL',
-    mediaType: 'VIDEO',
-    smartFilter: 'ALL',
-  },
-  {
-    id: 'PRIVACY_MASKED',
-    title: '防窥照片',
-    subtitle: '外层会保持遮罩',
-    filter: 'ALL',
-    mediaType: 'ALL',
-    smartFilter: 'PRIVACY_MASKED',
-  },
   {
     id: 'TODAY_IN_HISTORY',
     title: '今日往年',
@@ -180,7 +132,7 @@ const featuredCollectionDefinitions: FeaturedCollectionDefinition[] = [
   },
   {
     id: 'THIS_MONTH_HISTORY',
-    title: '本月回忆',
+    title: '回忆',
     subtitle: '往年同月拍摄',
     filter: 'ALL',
     mediaType: 'ALL',
@@ -507,7 +459,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.9.0' }))
+  app.get('/api/health', async () => ({ ok: true, version: '0.9.1' }))
 
   app.get('/api/bootstrap/status', async () => {
     const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }

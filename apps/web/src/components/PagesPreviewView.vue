@@ -42,7 +42,7 @@ const sampleImageUrl = `${import.meta.env.BASE_URL}login-album.webp`
         </div>
       </div>
 
-      <section class="media-grid" aria-label="示例照片墙">
+      <section class="media-grid" aria-label="示例图库">
         <button
           class="media-tile pages-sample-tile"
           type="button"

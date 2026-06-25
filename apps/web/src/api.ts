@@ -1,6 +1,8 @@
 import type {
   Asset,
+  FeaturedCollection,
   Folder,
+  GalleryFilter,
   ImportRunResult,
   ImportScanResult,
   MediaTypeFilter,
@@ -69,7 +71,7 @@ export const galleryApi = {
     folderId?: string | null,
     month?: string | null,
     query?: string | null,
-    filter: 'ALL' | 'FAVORITES' | 'DELETED' = 'ALL',
+    filter: GalleryFilter = 'ALL',
     mediaType: MediaTypeFilter = 'ALL',
     smartFilter: SmartFilter = 'ALL',
   ) => {
@@ -125,6 +127,13 @@ export const timelineApi = {
     if (query?.trim()) search.set('q', query.trim())
     if (filter !== 'ALL') search.set('filter', filter)
     return api<{ months: TimelineMonth[] }>(`/api/timeline/months?${search}`)
+  },
+}
+
+export const collectionApi = {
+  list: (scope: 'SHARED' | 'PRIVATE') => {
+    const search = new URLSearchParams({ scope })
+    return api<{ collections: FeaturedCollection[] }>(`/api/collections?${search}`)
   },
 }
 

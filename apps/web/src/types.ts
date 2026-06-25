@@ -42,9 +42,36 @@ export interface TimelineMonth {
 
 export type MediaTypeFilter = 'ALL' | 'IMAGE' | 'VIDEO' | 'LIVE_PHOTO'
 
-export type SmartFilter = 'ALL' | 'RECENT_IMPORTS' | 'UNTAGGED' | 'PRIVACY_MASKED'
+export type SmartFilter =
+  | 'ALL'
+  | 'RECENT_IMPORTS'
+  | 'UNTAGGED'
+  | 'PRIVACY_MASKED'
+  | 'TODAY_IN_HISTORY'
+  | 'THIS_MONTH_HISTORY'
 
 export type GridDensity = 'COMFORTABLE' | 'STANDARD' | 'COMPACT'
+
+export type GalleryFilter = 'ALL' | 'FAVORITES' | 'DELETED'
+
+export interface FeaturedCollection {
+  id:
+    | 'RECENT_IMPORTS'
+    | 'UNTAGGED'
+    | 'FAVORITES'
+    | 'LIVE_PHOTOS'
+    | 'VIDEOS'
+    | 'PRIVACY_MASKED'
+    | 'TODAY_IN_HISTORY'
+    | 'THIS_MONTH_HISTORY'
+  title: string
+  subtitle: string
+  count: number
+  filter: GalleryFilter
+  mediaType: MediaTypeFilter
+  smartFilter: SmartFilter
+  covers: Asset[]
+}
 
 export interface Folder {
   id: string

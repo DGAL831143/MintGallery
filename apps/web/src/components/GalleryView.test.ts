@@ -1,9 +1,10 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Asset, User } from '../types'
+import type { Asset, FeaturedCollection, User } from '../types'
 import GalleryView from './GalleryView.vue'
 
 const listMock = vi.hoisted(() => vi.fn())
+const collectionsMock = vi.hoisted(() => vi.fn())
 const foldersMock = vi.hoisted(() => vi.fn())
 const monthsMock = vi.hoisted(() => vi.fn())
 
@@ -18,6 +19,9 @@ vi.mock('../api', () => ({
   },
   authApi: {
     logout: vi.fn(),
+  },
+  collectionApi: {
+    list: collectionsMock,
   },
   folderApi: {
     addAssets: vi.fn(),
@@ -77,6 +81,20 @@ function asset(id: string, changes: Partial<Asset> = {}): Asset {
   }
 }
 
+function collection(id: FeaturedCollection['id'], changes: Partial<FeaturedCollection> = {}): FeaturedCollection {
+  return {
+    id,
+    title: id,
+    subtitle: 'collection',
+    count: 1,
+    filter: 'ALL',
+    mediaType: 'ALL',
+    smartFilter: 'ALL',
+    covers: [],
+    ...changes,
+  }
+}
+
 const user: User = {
   id: 'user-1',
   username: 'family',
@@ -110,10 +128,40 @@ function renderedIds(wrapper: VueWrapper) {
 describe('GalleryView filters', () => {
   beforeEach(() => {
     listMock.mockReset()
+    collectionsMock.mockReset()
     foldersMock.mockReset()
     monthsMock.mockReset()
+    collectionsMock.mockResolvedValue({ collections: [] })
     foldersMock.mockResolvedValue({ folders: [] })
     monthsMock.mockResolvedValue({ months: [] })
+  })
+
+  it('renders featured collections and opens one as a filtered grid', async () => {
+    const liveAsset = asset('live-asset', { type: 'LIVE_PHOTO' })
+    collectionsMock.mockResolvedValue({
+      collections: [
+        collection('LIVE_PHOTOS', {
+          title: '实况照片',
+          mediaType: 'LIVE_PHOTO',
+          covers: [liveAsset],
+        }),
+      ],
+    })
+    listMock.mockResolvedValue({ assets: [liveAsset], nextCursor: null })
+
+    const wrapper = mountGallery()
+    await flushPromises()
+
+    const card = wrapper.find('[data-featured-collection="LIVE_PHOTOS"]')
+    expect(card.exists()).toBe(true)
+
+    await card.trigger('click')
+    await flushPromises()
+
+    expect(listMock.mock.calls.at(-1)?.[6]).toBe('LIVE_PHOTO')
+    expect(listMock.mock.calls.at(-1)?.[7]).toBe('ALL')
+    expect(wrapper.find('.featured-grid').exists()).toBe(false)
+    expect(renderedIds(wrapper)).toEqual(['live-asset'])
   })
 
   it.each([
@@ -167,6 +215,9 @@ describe('GalleryView filters', () => {
     listMock.mockResolvedValue({ assets: [asset('visible-asset')], nextCursor: null })
 
     const wrapper = mountGallery()
+    await flushPromises()
+
+    await wrapper.findAll('[data-gallery-entry="all-photos"]')[0]!.trigger('click')
     await flushPromises()
 
     await wrapper.find('[data-media-filter="video"]').trigger('click')

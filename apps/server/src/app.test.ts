@@ -397,6 +397,96 @@ describe('MintGallery API', () => {
     ])
   })
 
+  it('returns featured collections and opens history filters from shooting dates', async () => {
+    const bootstrap = await app.inject({
+      method: 'POST',
+      url: '/api/bootstrap',
+      payload: { username: 'owner', password: 'strong-password' },
+    })
+    const cookie = bootstrap.headers['set-cookie']?.split(';')[0]
+    const pad = (value: number) => String(value).padStart(2, '0')
+    const toExifDate = (date: Date) =>
+      `${date.getFullYear()}:${pad(date.getMonth() + 1)}:${pad(date.getDate())} 12:00:00`
+    const today = new Date()
+    const sameDayLastYear = new Date(today.getFullYear() - 1, today.getMonth(), today.getDate(), 12)
+    const otherMonthLastYear = new Date(today.getFullYear() - 1, (today.getMonth() + 6) % 12, 10, 12)
+
+    const uploadDatedPhoto = async (filename: string, date: Date) => {
+      const boundary = `----mintgallery-featured-${filename}`
+      const image = await sharp({
+        create: { width: 8, height: 8, channels: 3, background: '#40916c' },
+      })
+        .jpeg()
+        .withExif({ IFD2: { DateTimeOriginal: toExifDate(date) } })
+        .toBuffer()
+      const payload = Buffer.concat([
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: image/jpeg\r\n\r\n`,
+        ),
+        image,
+        Buffer.from(`\r\n--${boundary}--\r\n`),
+      ])
+      return app.inject({
+        method: 'POST',
+        url: '/api/assets?visibility=PRIVATE',
+        headers: { cookie, 'content-type': `multipart/form-data; boundary=${boundary}` },
+        payload,
+      })
+    }
+
+    const memory = await uploadDatedPhoto('history.jpg', sameDayLastYear)
+    const other = await uploadDatedPhoto('other-month.jpg', otherMonthLastYear)
+    expect(memory.statusCode).toBe(201)
+    expect(other.statusCode).toBe(201)
+    const memoryAsset = memory.json().asset
+
+    const updated = await app.inject({
+      method: 'PATCH',
+      url: `/api/assets/${memoryAsset.id}`,
+      headers: { cookie },
+      payload: { favorite: true, privacyMasked: true, tags: ['回忆'] },
+    })
+    expect(updated.statusCode).toBe(200)
+
+    const collections = await app.inject({
+      method: 'GET',
+      url: '/api/collections?scope=PRIVATE',
+      headers: { cookie },
+    })
+    expect(collections.statusCode).toBe(200)
+    type CollectionResponse = {
+      id: string
+      count: number
+      filter: string
+      smartFilter: string
+      covers: Array<{ id: string; privacyMasked: boolean }>
+    }
+    const byId = new Map<string, CollectionResponse>(
+      collections.json().collections.map((item: CollectionResponse) => [item.id, item]),
+    )
+    expect(byId.get('RECENT_IMPORTS')).toMatchObject({ count: 2, smartFilter: 'RECENT_IMPORTS' })
+    expect(byId.get('UNTAGGED')).toMatchObject({ count: 1, smartFilter: 'UNTAGGED' })
+    expect(byId.get('FAVORITES')).toMatchObject({ count: 1, filter: 'FAVORITES' })
+    expect(byId.get('PRIVACY_MASKED')).toMatchObject({ count: 1, smartFilter: 'PRIVACY_MASKED' })
+    expect(byId.get('TODAY_IN_HISTORY')).toMatchObject({ count: 1, smartFilter: 'TODAY_IN_HISTORY' })
+    expect(byId.get('THIS_MONTH_HISTORY')).toMatchObject({ count: 1, smartFilter: 'THIS_MONTH_HISTORY' })
+    expect(byId.get('FAVORITES').covers[0]).toMatchObject({ id: memoryAsset.id, privacyMasked: true })
+
+    const todayInHistory = await app.inject({
+      method: 'GET',
+      url: '/api/assets?scope=PRIVATE&smartFilter=TODAY_IN_HISTORY',
+      headers: { cookie },
+    })
+    expect(todayInHistory.json().assets.map((asset: { id: string }) => asset.id)).toEqual([memoryAsset.id])
+
+    const thisMonth = await app.inject({
+      method: 'GET',
+      url: '/api/assets?scope=PRIVATE&smartFilter=THIS_MONTH_HISTORY',
+      headers: { cookie },
+    })
+    expect(thisMonth.json().assets.map((asset: { id: string }) => asset.id)).toEqual([memoryAsset.id])
+  })
+
   it('organizes visible assets in personal folders without deleting media', async () => {
     const bootstrap = await app.inject({
       method: 'POST',

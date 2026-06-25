@@ -102,6 +102,92 @@ interface MediaRow {
   original_name: string
 }
 
+type GalleryFilter = 'ALL' | 'FAVORITES' | 'DELETED'
+type MediaTypeFilter = 'ALL' | AssetRow['type']
+type SmartFilter =
+  | 'ALL'
+  | 'RECENT_IMPORTS'
+  | 'UNTAGGED'
+  | 'PRIVACY_MASKED'
+  | 'TODAY_IN_HISTORY'
+  | 'THIS_MONTH_HISTORY'
+
+interface FeaturedCollectionDefinition {
+  id: Exclude<SmartFilter, 'ALL'> | 'FAVORITES' | 'LIVE_PHOTOS' | 'VIDEOS'
+  title: string
+  subtitle: string
+  filter: GalleryFilter
+  mediaType: MediaTypeFilter
+  smartFilter: SmartFilter
+}
+
+const featuredCollectionDefinitions: FeaturedCollectionDefinition[] = [
+  {
+    id: 'RECENT_IMPORTS',
+    title: '最近导入',
+    subtitle: '刚上传和刚导入的照片',
+    filter: 'ALL',
+    mediaType: 'ALL',
+    smartFilter: 'RECENT_IMPORTS',
+  },
+  {
+    id: 'UNTAGGED',
+    title: '待整理',
+    subtitle: '还没有标签的项目',
+    filter: 'ALL',
+    mediaType: 'ALL',
+    smartFilter: 'UNTAGGED',
+  },
+  {
+    id: 'FAVORITES',
+    title: '收藏',
+    subtitle: '已点亮星标的照片',
+    filter: 'FAVORITES',
+    mediaType: 'ALL',
+    smartFilter: 'ALL',
+  },
+  {
+    id: 'LIVE_PHOTOS',
+    title: '实况照片',
+    subtitle: '包含动态片段的照片',
+    filter: 'ALL',
+    mediaType: 'LIVE_PHOTO',
+    smartFilter: 'ALL',
+  },
+  {
+    id: 'VIDEOS',
+    title: '视频',
+    subtitle: '普通视频文件',
+    filter: 'ALL',
+    mediaType: 'VIDEO',
+    smartFilter: 'ALL',
+  },
+  {
+    id: 'PRIVACY_MASKED',
+    title: '防窥照片',
+    subtitle: '外层会保持遮罩',
+    filter: 'ALL',
+    mediaType: 'ALL',
+    smartFilter: 'PRIVACY_MASKED',
+  },
+  {
+    id: 'TODAY_IN_HISTORY',
+    title: '今日往年',
+    subtitle: '往年同一天拍摄',
+    filter: 'ALL',
+    mediaType: 'ALL',
+    smartFilter: 'TODAY_IN_HISTORY',
+  },
+  {
+    id: 'THIS_MONTH_HISTORY',
+    title: '本月回忆',
+    subtitle: '往年同月拍摄',
+    filter: 'ALL',
+    mediaType: 'ALL',
+    smartFilter: 'THIS_MONTH_HISTORY',
+  },
+]
+
 function cleanUsername(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
@@ -132,21 +218,65 @@ function validVisibility(value: unknown): value is 'SHARED' | 'PRIVATE' {
   return value === 'SHARED' || value === 'PRIVATE'
 }
 
-function validGalleryFilter(value: unknown): value is 'ALL' | 'FAVORITES' | 'DELETED' {
+function validGalleryFilter(value: unknown): value is GalleryFilter {
   return value === 'ALL' || value === 'FAVORITES' || value === 'DELETED'
 }
 
-function validMediaTypeFilter(value: unknown): value is 'ALL' | AssetRow['type'] {
+function validMediaTypeFilter(value: unknown): value is MediaTypeFilter {
   return value === 'ALL' || value === 'IMAGE' || value === 'VIDEO' || value === 'LIVE_PHOTO'
 }
 
-function validSmartFilter(
-  value: unknown,
-): value is 'ALL' | 'RECENT_IMPORTS' | 'UNTAGGED' | 'PRIVACY_MASKED' {
+function validSmartFilter(value: unknown): value is SmartFilter {
   return value === 'ALL' ||
     value === 'RECENT_IMPORTS' ||
     value === 'UNTAGGED' ||
-    value === 'PRIVACY_MASKED'
+    value === 'PRIVACY_MASKED' ||
+    value === 'TODAY_IN_HISTORY' ||
+    value === 'THIS_MONTH_HISTORY'
+}
+
+function sortExpressionFor(filter: GalleryFilter, smartFilter: SmartFilter): string {
+  if (filter === 'DELETED') return 'a.deleted_at'
+  if (smartFilter === 'RECENT_IMPORTS') return 'a.uploaded_at'
+  return 'COALESCE(a.shooting_time, a.uploaded_at)'
+}
+
+function addSmartFilterCondition(
+  smartFilter: SmartFilter,
+  conditions: string[],
+  parameters: Array<string | number>,
+  now = Date.now(),
+): void {
+  if (smartFilter === 'UNTAGGED') {
+    conditions.push("a.tags = '[]'")
+  }
+  if (smartFilter === 'PRIVACY_MASKED') {
+    conditions.push('a.privacy_masked = 1')
+  }
+  if (smartFilter === 'TODAY_IN_HISTORY') {
+    conditions.push('a.shooting_time IS NOT NULL')
+    conditions.push(`
+      strftime('%m-%d', a.shooting_time / 1000, 'unixepoch', 'localtime') =
+      strftime('%m-%d', ? / 1000, 'unixepoch', 'localtime')
+    `)
+    conditions.push(`
+      strftime('%Y', a.shooting_time / 1000, 'unixepoch', 'localtime') <
+      strftime('%Y', ? / 1000, 'unixepoch', 'localtime')
+    `)
+    parameters.push(now, now)
+  }
+  if (smartFilter === 'THIS_MONTH_HISTORY') {
+    conditions.push('a.shooting_time IS NOT NULL')
+    conditions.push(`
+      strftime('%m', a.shooting_time / 1000, 'unixepoch', 'localtime') =
+      strftime('%m', ? / 1000, 'unixepoch', 'localtime')
+    `)
+    conditions.push(`
+      strftime('%Y', a.shooting_time / 1000, 'unixepoch', 'localtime') <
+      strftime('%Y', ? / 1000, 'unixepoch', 'localtime')
+    `)
+    parameters.push(now, now)
+  }
 }
 
 function cleanSearchQuery(value: unknown): string {
@@ -377,7 +507,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.8.0' }))
+  app.get('/api/health', async () => ({ ok: true, version: '0.9.0' }))
 
   app.get('/api/bootstrap/status', async () => {
     const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }
@@ -978,6 +1108,65 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { assets: updatedRows.map(serializeAsset) }
   })
 
+  app.get('/api/collections', { preHandler: requireUser }, async (request, reply) => {
+    const query = request.query as { scope?: string }
+    const scope = query.scope ?? 'SHARED'
+    if (scope !== 'SHARED' && scope !== 'PRIVATE') {
+      return reply.code(400).send({ message: '相册范围无效' })
+    }
+
+    const now = Date.now()
+    const collections = featuredCollectionDefinitions.map((definition) => {
+      const conditions = scope === 'SHARED'
+        ? ["a.visibility = 'SHARED'", 'a.deleted_at IS NULL']
+        : ["a.visibility = 'PRIVATE'", 'a.owner_id = ?', 'a.deleted_at IS NULL']
+      const parameters: Array<string | number> = scope === 'PRIVATE' ? [request.currentUser!.id] : []
+
+      if (definition.filter === 'FAVORITES') {
+        conditions.push('a.favorite = 1')
+      }
+      if (definition.mediaType !== 'ALL') {
+        conditions.push('a.type = ?')
+        parameters.push(definition.mediaType)
+      }
+      addSmartFilterCondition(definition.smartFilter, conditions, parameters, now)
+
+      const countRow = database.prepare(`
+        SELECT COUNT(*) AS total
+        FROM assets a
+        WHERE ${conditions.join(' AND ')}
+      `).get(...parameters) as { total: number }
+      const sortExpression = sortExpressionFor(definition.filter, definition.smartFilter)
+      const coverRows = database.prepare(`
+        SELECT a.*, ${sortExpression} AS sort_time,
+          u.username AS owner_name,
+          ${assetFileColumns}
+        FROM assets a
+        JOIN users u ON u.id = a.owner_id
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY
+          CASE WHEN a.privacy_masked = 1 THEN 1 ELSE 0 END,
+          a.favorite DESC,
+          sort_time DESC,
+          a.id DESC
+        LIMIT 4
+      `).all(...parameters) as unknown as AssetRow[]
+
+      return {
+        id: definition.id,
+        title: definition.title,
+        subtitle: definition.subtitle,
+        count: countRow.total,
+        filter: definition.filter,
+        mediaType: definition.mediaType,
+        smartFilter: definition.smartFilter,
+        covers: coverRows.map(serializeAsset),
+      }
+    })
+
+    return { collections }
+  })
+
   app.get('/api/assets', { preHandler: requireUser }, async (request, reply) => {
     const query = request.query as {
       scope?: string
@@ -1024,11 +1213,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     }
 
-    const sortExpression = filter === 'DELETED'
-      ? 'a.deleted_at'
-      : smartFilter === 'RECENT_IMPORTS'
-        ? 'a.uploaded_at'
-        : 'COALESCE(a.shooting_time, a.uploaded_at)'
+    const sortExpression = sortExpressionFor(filter, smartFilter)
     const conditions = filter === 'DELETED'
       ? ['a.deleted_at IS NOT NULL']
       : scope === 'SHARED'
@@ -1048,12 +1233,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       conditions.push('a.type = ?')
       parameters.push(mediaType)
     }
-    if (smartFilter === 'UNTAGGED') {
-      conditions.push("a.tags = '[]'")
-    }
-    if (smartFilter === 'PRIVACY_MASKED') {
-      conditions.push('a.privacy_masked = 1')
-    }
+    addSmartFilterCondition(smartFilter, conditions, parameters)
     if (query.folderId && filter !== 'DELETED') {
       const folder = database.prepare('SELECT id FROM folders WHERE id = ? AND owner_id = ?')
         .get(query.folderId, request.currentUser!.id)

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch, type Component } from 'vue'
 import {
   CalendarDays,
   CircleAlert,
@@ -31,11 +31,13 @@ import {
   UsersRound,
   X,
 } from 'lucide-vue-next'
-import { authApi, folderApi, galleryApi, timelineApi } from '../api'
+import { authApi, collectionApi, folderApi, galleryApi, timelineApi } from '../api'
 import { formatMonth, groupTimelineAssets } from '../timeline'
 import type {
   Asset,
+  FeaturedCollection,
   Folder as GalleryFolder,
+  GalleryFilter,
   GridDensity,
   MediaTypeFilter,
   SmartFilter,
@@ -50,14 +52,15 @@ import UploadPanel from './UploadPanel.vue'
 
 const props = defineProps<{ user: User }>()
 const emit = defineEmits<{ signedOut: [] }>()
-type GalleryFilter = 'ALL' | 'FAVORITES' | 'DELETED'
+type ViewMode = 'FEATURED' | 'TIMELINE' | 'GRID'
 const scope = ref<'SHARED' | 'PRIVATE'>('SHARED')
-const viewMode = ref<'TIMELINE' | 'GRID'>('TIMELINE')
+const viewMode = ref<ViewMode>('FEATURED')
 const galleryFilter = ref<GalleryFilter>('ALL')
 const mediaTypeFilter = ref<MediaTypeFilter>('ALL')
 const smartFilter = ref<SmartFilter>('ALL')
 const gridDensity = ref<GridDensity>('STANDARD')
 const assets = ref<Asset[]>([])
+const featuredCollections = ref<FeaturedCollection[]>([])
 const folders = ref<GalleryFolder[]>([])
 const months = ref<TimelineMonth[]>([])
 const activeFolderId = ref<string | null>(null)
@@ -65,8 +68,10 @@ const activeMonth = ref<string | null>(null)
 const cursor = ref<string | null>(null)
 const searchQuery = ref('')
 const loading = ref(true)
+const collectionsLoading = ref(true)
 const loadingMore = ref(false)
 const error = ref('')
+const collectionsError = ref('')
 const viewerIndex = ref<number | null>(null)
 const adminOpen = ref(false)
 const selectionMode = ref(false)
@@ -78,12 +83,25 @@ const assetUpdateBusy = ref(false)
 const bulkTagOpen = ref(false)
 const bulkTagInput = ref('')
 let assetLoadRequest = 0
+let collectionLoadRequest = 0
+
+const collectionIcons: Record<FeaturedCollection['id'], Component> = {
+  RECENT_IMPORTS: Clock3,
+  UNTAGGED: Tags,
+  FAVORITES: Star,
+  LIVE_PHOTOS: Sparkles,
+  VIDEOS: Film,
+  PRIVACY_MASKED: EyeOff,
+  TODAY_IN_HISTORY: CalendarDays,
+  THIS_MONTH_HISTORY: Images,
+}
 
 const activeFolder = computed(() => folders.value.find((folder) => folder.id === activeFolderId.value) ?? null)
 const selectedCount = computed(() => selectedIds.value.size)
 const timelineGroups = computed(() => groupTimelineAssets(assets.value))
 const scopeTitle = computed(() => activeFolder.value?.name ?? (scope.value === 'SHARED' ? '家庭共享' : '仅自己可见'))
 const galleryTitle = computed(() => {
+  if (viewMode.value === 'FEATURED') return '精选'
   if (galleryFilter.value === 'FAVORITES') return '收藏'
   if (galleryFilter.value === 'DELETED') return '最近删除'
   if (smartFilter.value === 'RECENT_IMPORTS') return '最近导入'
@@ -93,6 +111,14 @@ const galleryTitle = computed(() => {
   if (mediaTypeFilter.value === 'VIDEO') return '视频'
   if (mediaTypeFilter.value === 'LIVE_PHOTO') return '实况照片'
   return activeMonth.value ? formatMonth(activeMonth.value) : scopeTitle.value
+})
+const galleryEyebrow = computed(() => {
+  if (galleryFilter.value === 'FAVORITES') return 'FAVORITES'
+  if (galleryFilter.value === 'DELETED') return 'RECENTLY DELETED'
+  if (viewMode.value === 'FEATURED') return 'FEATURED'
+  if (viewMode.value === 'TIMELINE') return 'TIMELINE'
+  if (activeFolder.value) return 'PERSONAL FOLDER'
+  return 'ALL PHOTOS'
 })
 const searchActive = computed(() => searchQuery.value.trim().length > 0)
 const browsingDeleted = computed(() => galleryFilter.value === 'DELETED')
@@ -114,7 +140,7 @@ const emptyTitle = computed(() => {
 })
 const emptyMessage = computed(() => {
   if (searchActive.value) return '换个标签、上传者或媒体类型再试。'
-  if (galleryFilter.value === 'FAVORITES') return '在照片墙或查看器中点亮星标后，会出现在这里。'
+  if (galleryFilter.value === 'FAVORITES') return '在全部照片或查看器中点亮星标后，会出现在这里。'
   if (galleryFilter.value === 'DELETED') return '被删除的照片会先进入这里，原文件仍保留在电脑中。'
   if (smartFilter.value === 'RECENT_IMPORTS') return '上传或外部导入后会按导入时间出现在这里。'
   if (smartFilter.value === 'UNTAGGED') return '这里会显示还没有标签的项目，适合集中整理。'
@@ -158,6 +184,23 @@ async function load(reset = true) {
   }
 }
 
+async function loadCollections() {
+  const requestId = ++collectionLoadRequest
+  collectionsLoading.value = true
+  collectionsError.value = ''
+  try {
+    const result = await collectionApi.list(scope.value)
+    if (requestId !== collectionLoadRequest) return
+    featuredCollections.value = result.collections
+  } catch (reason) {
+    if (requestId !== collectionLoadRequest) return
+    collectionsError.value = reason instanceof Error ? reason.message : '精选集加载失败'
+  } finally {
+    if (requestId !== collectionLoadRequest) return
+    collectionsLoading.value = false
+  }
+}
+
 async function loadFolders() {
   try {
     folders.value = (await folderApi.list()).folders
@@ -185,12 +228,12 @@ async function loadMonths() {
 
 function receiveAsset(asset: Asset) {
   if (galleryFilter.value === 'ALL' && !activeFolderId.value && asset.visibility === scope.value) {
-    void Promise.all([load(true), loadMonths()])
+    void Promise.all([load(true), loadMonths(), loadCollections()])
   }
 }
 
 function receiveImportedAssets() {
-  void Promise.all([load(true), loadMonths(), loadFolders()])
+  void Promise.all([load(true), loadMonths(), loadFolders(), loadCollections()])
 }
 
 function mergeAssets(updatedAssets: Asset[]) {
@@ -231,7 +274,14 @@ function openAsset(assetId: string, index: number) {
 
 function chooseFolder(folderId: string | null) {
   galleryFilter.value = 'ALL'
-  if (activeFolderId.value !== folderId) activeFolderId.value = folderId
+  viewMode.value = 'GRID'
+  activeMonth.value = null
+  resetBrowsingFilters()
+  const changed = activeFolderId.value !== folderId
+  if (changed) activeFolderId.value = folderId
+  viewerIndex.value = null
+  leaveSelection()
+  if (!changed) void Promise.all([load(true), loadMonths()])
 }
 
 function resetBrowsingFilters() {
@@ -239,11 +289,21 @@ function resetBrowsingFilters() {
   smartFilter.value = 'ALL'
 }
 
-function chooseView(next: 'TIMELINE' | 'GRID') {
+function chooseView(next: ViewMode) {
   galleryFilter.value = 'ALL'
   viewMode.value = next
-  if (next === 'GRID') activeMonth.value = null
-  else resetBrowsingFilters()
+  if (next === 'FEATURED') {
+    activeFolderId.value = null
+    activeMonth.value = null
+    resetBrowsingFilters()
+    void loadCollections()
+  } else if (next === 'GRID') {
+    activeMonth.value = null
+  } else {
+    resetBrowsingFilters()
+  }
+  viewerIndex.value = null
+  leaveSelection()
 }
 
 function chooseMonth(month: string | null) {
@@ -282,6 +342,18 @@ function applySmartFilter(filter: SmartFilter) {
   activeMonth.value = null
   viewerIndex.value = null
   leaveSelection()
+}
+
+function openFeaturedCollection(collection: FeaturedCollection) {
+  galleryFilter.value = collection.filter
+  mediaTypeFilter.value = collection.mediaType
+  smartFilter.value = collection.smartFilter
+  activeFolderId.value = null
+  activeMonth.value = null
+  viewMode.value = 'GRID'
+  viewerIndex.value = null
+  leaveSelection()
+  void Promise.all([load(true), loadMonths()])
 }
 
 function openFolderDialog() {
@@ -357,10 +429,10 @@ async function updateSelection(changes: {
       (galleryFilter.value === 'FAVORITES' && changes.favorite === false)
     leaveSelection()
     if (needsReload) {
-      await Promise.all([load(true), loadMonths(), loadFolders()])
+      await Promise.all([load(true), loadMonths(), loadFolders(), loadCollections()])
     } else {
       mergeAssets(result.assets)
-      await loadMonths()
+      await Promise.all([loadMonths(), loadCollections()])
     }
     return true
   } catch (reason) {
@@ -432,11 +504,11 @@ function handleViewerUpdated(updatedAsset: Asset) {
   if (shouldRemove) {
     viewerIndex.value = null
     assets.value = assets.value.filter((asset) => asset.id !== updatedAsset.id)
-    void Promise.all([loadMonths(), loadFolders()])
+    void Promise.all([loadMonths(), loadFolders(), loadCollections()])
     return
   }
   mergeAssets([updatedAsset])
-  void loadMonths()
+  void Promise.all([loadMonths(), loadCollections()])
 }
 
 async function deleteActiveFolder() {
@@ -458,7 +530,7 @@ async function signOut() {
 
 watch([scope, activeFolderId, galleryFilter, mediaTypeFilter, smartFilter], () => {
   leaveSelection()
-  void loadMonths()
+  void Promise.all([loadMonths(), loadCollections()])
   if (activeMonth.value) activeMonth.value = null
   else void load(true)
 })
@@ -468,10 +540,11 @@ watch(activeMonth, () => {
 })
 watch(searchQuery, () => {
   leaveSelection()
+  if (viewMode.value === 'FEATURED' && searchQuery.value.trim()) viewMode.value = 'GRID'
   void Promise.all([load(true), loadMonths()])
 })
 onMounted(() => {
-  void Promise.all([load(true), loadFolders(), loadMonths()])
+  void Promise.all([load(true), loadFolders(), loadMonths(), loadCollections()])
 })
 </script>
 
@@ -507,11 +580,11 @@ onMounted(() => {
         <aside class="library-sidebar" aria-label="相册导航">
           <section class="sidebar-section">
             <span class="sidebar-label">图库</span>
+            <button :class="{ active: galleryFilter === 'ALL' && viewMode === 'FEATURED' }" @click="chooseView('FEATURED')">
+              <Sparkles :size="18" /><span>精选</span>
+            </button>
             <button :class="{ active: galleryFilter === 'ALL' && viewMode === 'TIMELINE' }" @click="chooseView('TIMELINE')">
               <CalendarDays :size="18" /><span>时间轴</span>
-            </button>
-            <button :class="{ active: galleryFilter === 'ALL' && viewMode === 'GRID' }" @click="chooseView('GRID')">
-              <Grid3X3 :size="18" /><span>照片墙</span>
             </button>
             <button data-gallery-filter="favorites" :class="{ active: galleryFilter === 'FAVORITES' }" @click="chooseLibraryFilter('FAVORITES')">
               <Star :size="18" /><span>收藏</span>
@@ -526,7 +599,7 @@ onMounted(() => {
               <span class="sidebar-label">文件夹</span>
               <button class="sidebar-add" title="新建文件夹" @click="openFolderDialog"><FolderPlus :size="17" /></button>
             </div>
-            <button :class="{ active: galleryFilter === 'ALL' && !activeFolderId }" @click="chooseFolder(null)">
+            <button data-gallery-entry="all-photos" :class="{ active: galleryFilter === 'ALL' && !activeFolderId && viewMode === 'GRID' && !quickFilterActive }" @click="chooseFolder(null)">
               <Images :size="18" /><span>全部照片</span>
             </button>
             <button v-for="folder in folders" :key="folder.id" :class="{ active: activeFolderId === folder.id }" @click="chooseFolder(folder.id)">
@@ -545,7 +618,7 @@ onMounted(() => {
 
         <section class="gallery-content">
           <nav class="folder-tabs mobile-folder-tabs" aria-label="照片文件夹">
-            <button :class="{ active: galleryFilter === 'ALL' && !activeFolderId }" type="button" @click="chooseFolder(null)">
+            <button data-gallery-entry="all-photos" :class="{ active: galleryFilter === 'ALL' && !activeFolderId && viewMode === 'GRID' && !quickFilterActive }" type="button" @click="chooseFolder(null)">
               <Images :size="17" /><span>全部照片</span>
             </button>
             <button data-gallery-filter="favorites" :class="{ active: galleryFilter === 'FAVORITES' }" type="button" @click="chooseLibraryFilter('FAVORITES')">
@@ -564,8 +637,8 @@ onMounted(() => {
 
           <div class="mobile-view-controls">
             <div class="segmented compact" aria-label="浏览方式">
+              <button :class="{ active: galleryFilter === 'ALL' && viewMode === 'FEATURED' }" @click="chooseView('FEATURED')"><Sparkles :size="16" />精选</button>
               <button :class="{ active: galleryFilter === 'ALL' && viewMode === 'TIMELINE' }" @click="chooseView('TIMELINE')"><CalendarDays :size="16" />时间轴</button>
-              <button :class="{ active: galleryFilter === 'ALL' && viewMode === 'GRID' }" @click="chooseView('GRID')"><Grid3X3 :size="16" />照片墙</button>
             </div>
             <label v-if="galleryFilter !== 'DELETED' && viewMode === 'TIMELINE'" class="month-select">
               <CalendarDays :size="17" />
@@ -579,7 +652,7 @@ onMounted(() => {
           <div class="gallery-heading">
             <div class="gallery-title-row">
               <div>
-                <span class="eyebrow">{{ galleryFilter === 'FAVORITES' ? 'FAVORITES' : galleryFilter === 'DELETED' ? 'RECENTLY DELETED' : viewMode === 'TIMELINE' ? 'TIMELINE' : activeFolder ? 'PERSONAL FOLDER' : 'PHOTO GRID' }}</span>
+                <span class="eyebrow">{{ galleryEyebrow }}</span>
                 <h1>{{ galleryTitle }}</h1>
               </div>
               <button v-if="activeFolder && galleryFilter === 'ALL'" class="icon-button" type="button" title="删除文件夹" @click="deleteActiveFolder"><Trash2 :size="19" /></button>
@@ -595,7 +668,7 @@ onMounted(() => {
             </div>
           </div>
 
-          <div v-if="galleryFilter !== 'DELETED'" class="browse-controls" :class="{ active: quickFilterActive }">
+          <div v-if="galleryFilter !== 'DELETED' && viewMode !== 'FEATURED'" class="browse-controls" :class="{ active: quickFilterActive }">
             <div class="filter-cluster" aria-label="媒体类型">
               <button data-media-filter="all" :class="{ active: mediaTypeFilter === 'ALL' }" type="button" @click="applyMediaTypeFilter('ALL')">
                 <Images :size="16" /><span>全部</span>
@@ -626,58 +699,102 @@ onMounted(() => {
               </button>
             </div>
 
-            <div v-if="viewMode === 'GRID'" class="filter-cluster density-cluster" aria-label="照片墙密度">
+            <div v-if="viewMode === 'GRID'" class="filter-cluster density-cluster" aria-label="列表密度">
               <button data-density="comfortable" :class="{ active: gridDensity === 'COMFORTABLE' }" type="button" @click="gridDensity = 'COMFORTABLE'">大图</button>
               <button data-density="standard" :class="{ active: gridDensity === 'STANDARD' }" type="button" @click="gridDensity = 'STANDARD'">标准</button>
               <button data-density="compact" :class="{ active: gridDensity === 'COMPACT' }" type="button" @click="gridDensity = 'COMPACT'">紧凑</button>
             </div>
           </div>
 
-          <div v-if="loading" class="gallery-state"><LoaderCircle class="spin" :size="28" /><span>正在整理照片</span></div>
-          <div v-else-if="error" class="gallery-state error-state">
-            <CircleAlert :size="28" /><strong>相册暂时打不开</strong><span>{{ error }}</span>
-            <button class="button button-secondary" @click="load(true)">重新加载</button>
-          </div>
-          <div v-else-if="assets.length === 0" class="gallery-state empty-state">
-            <div class="empty-visual"><Images :size="44" /><Leaf :size="24" /></div>
-            <strong>{{ emptyTitle }}</strong>
-            <span>{{ emptyMessage }}</span>
-          </div>
-
-          <div v-else-if="viewMode === 'TIMELINE'" class="timeline-view">
-            <section v-for="group in timelineGroups" :key="group.month" class="timeline-section">
-              <header><h2>{{ group.label }}</h2><span>{{ group.entries.length }} 项</span></header>
-              <div class="timeline-grid">
-                <MediaTile
-                  v-for="entry in group.entries"
-                  :key="entry.asset.id"
-                  :asset="entry.asset"
-                  :selected="selectedIds.has(entry.asset.id)"
-                  :selecting="selectionMode"
-                  ratio="1 / 1"
-                  @activate="openAsset(entry.asset.id, entry.index)"
-                />
-              </div>
-            </section>
-          </div>
-
-          <section v-else class="media-grid" :class="gridDensityClass" aria-label="照片墙">
-            <MediaTile
-              v-for="(asset, index) in assets"
-              :key="asset.id"
-              :asset="asset"
-              :selected="selectedIds.has(asset.id)"
-              :selecting="selectionMode"
-              :ratio="assetRatio(asset)"
-              @activate="openAsset(asset.id, index)"
-            />
+          <section v-if="viewMode === 'FEATURED'" class="featured-view" aria-label="精选集">
+            <div v-if="collectionsLoading" class="gallery-state"><LoaderCircle class="spin" :size="28" /><span>正在整理精选</span></div>
+            <div v-else-if="collectionsError" class="gallery-state error-state">
+              <CircleAlert :size="28" /><strong>精选暂时打不开</strong><span>{{ collectionsError }}</span>
+              <button class="button button-secondary" @click="loadCollections">重新加载</button>
+            </div>
+            <div v-else class="featured-grid">
+              <button
+                v-for="collection in featuredCollections"
+                :key="collection.id"
+                class="featured-card"
+                :class="{ empty: collection.count === 0 }"
+                :data-featured-collection="collection.id"
+                type="button"
+                @click="openFeaturedCollection(collection)"
+              >
+                <div class="featured-cover" :class="{ empty: collection.covers.length === 0 }">
+                  <template v-if="collection.covers.length">
+                    <div
+                      v-for="cover in collection.covers"
+                      :key="cover.id"
+                      class="featured-cover-tile"
+                      :class="{ masked: cover.privacyMasked }"
+                    >
+                      <img v-if="cover.thumbnailUrl" :src="cover.thumbnailUrl" alt="" loading="lazy" />
+                      <div v-else class="featured-cover-fallback"><Images :size="22" /></div>
+                    </div>
+                  </template>
+                  <div v-else class="featured-cover-fallback"><Images :size="28" /></div>
+                </div>
+                <div class="featured-card-meta">
+                  <component :is="collectionIcons[collection.id]" :size="18" />
+                  <div>
+                    <strong>{{ collection.title }}</strong>
+                    <span>{{ collection.subtitle }}</span>
+                  </div>
+                  <small>{{ collection.count }}</small>
+                </div>
+              </button>
+            </div>
           </section>
 
-          <div v-if="cursor" class="load-more-wrap">
-            <button class="button button-secondary" :disabled="loadingMore" @click="load(false)">
-              <LoaderCircle v-if="loadingMore" class="spin" :size="18" />加载更多
-            </button>
-          </div>
+          <template v-else>
+            <div v-if="loading" class="gallery-state"><LoaderCircle class="spin" :size="28" /><span>正在整理照片</span></div>
+            <div v-else-if="error" class="gallery-state error-state">
+              <CircleAlert :size="28" /><strong>相册暂时打不开</strong><span>{{ error }}</span>
+              <button class="button button-secondary" @click="load(true)">重新加载</button>
+            </div>
+            <div v-else-if="assets.length === 0" class="gallery-state empty-state">
+              <div class="empty-visual"><Images :size="44" /><Leaf :size="24" /></div>
+              <strong>{{ emptyTitle }}</strong>
+              <span>{{ emptyMessage }}</span>
+            </div>
+
+            <div v-else-if="viewMode === 'TIMELINE'" class="timeline-view">
+              <section v-for="group in timelineGroups" :key="group.month" class="timeline-section">
+                <header><h2>{{ group.label }}</h2><span>{{ group.entries.length }} 项</span></header>
+                <div class="timeline-grid">
+                  <MediaTile
+                    v-for="entry in group.entries"
+                    :key="entry.asset.id"
+                    :asset="entry.asset"
+                    :selected="selectedIds.has(entry.asset.id)"
+                    :selecting="selectionMode"
+                    ratio="1 / 1"
+                    @activate="openAsset(entry.asset.id, entry.index)"
+                  />
+                </div>
+              </section>
+            </div>
+
+            <section v-else class="media-grid" :class="gridDensityClass" aria-label="全部照片">
+              <MediaTile
+                v-for="(asset, index) in assets"
+                :key="asset.id"
+                :asset="asset"
+                :selected="selectedIds.has(asset.id)"
+                :selecting="selectionMode"
+                :ratio="assetRatio(asset)"
+                @activate="openAsset(asset.id, index)"
+              />
+            </section>
+
+            <div v-if="cursor" class="load-more-wrap">
+              <button class="button button-secondary" :disabled="loadingMore" @click="load(false)">
+                <LoaderCircle v-if="loadingMore" class="spin" :size="18" />加载更多
+              </button>
+            </div>
+          </template>
         </section>
       </div>
     </main>

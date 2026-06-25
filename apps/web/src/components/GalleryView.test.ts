@@ -136,7 +136,7 @@ describe('GalleryView filters', () => {
     monthsMock.mockResolvedValue({ months: [] })
   })
 
-  it('renders memory featured collections and opens one as a filtered grid', async () => {
+  it('renders memory featured collections as a rotating wall and opens one as a filtered grid', async () => {
     const memoryAsset = asset('memory-asset')
     collectionsMock.mockResolvedValue({
       collections: [
@@ -152,10 +152,13 @@ describe('GalleryView filters', () => {
     const wrapper = mountGallery()
     await flushPromises()
 
+    expect(wrapper.find('.featured-memory-stage').exists()).toBe(true)
+    expect(wrapper.find('[data-featured-wall-photo="TODAY_IN_HISTORY"]').exists()).toBe(true)
+
     const card = wrapper.find('[data-featured-collection="TODAY_IN_HISTORY"]')
     expect(card.exists()).toBe(true)
 
-    await card.trigger('click')
+    await wrapper.find('[data-featured-wall-photo="TODAY_IN_HISTORY"]').trigger('click')
     await flushPromises()
 
     expect(listMock.mock.calls.at(-1)?.[6]).toBe('ALL')

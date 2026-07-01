@@ -243,4 +243,41 @@ describe('GalleryView filters', () => {
     expect(wrapper.find('.media-grid').classes()).toContain('media-grid-compact')
     expect(renderedIds(wrapper)).toEqual(['visible-asset'])
   })
+
+  it('renders a count-free year rail in the timeline view', async () => {
+    monthsMock.mockResolvedValue({
+      months: [
+        { month: '2026-07', count: 4 },
+        { month: '2026-06', count: 2 },
+        { month: '2025-12', count: 1 },
+      ],
+    })
+    listMock.mockResolvedValue({
+      assets: [
+        asset('july-photo', { shootingTime: '2026-07-10T08:00:00.000Z' }),
+        asset('december-photo', { shootingTime: '2025-12-01T08:00:00.000Z' }),
+      ],
+      nextCursor: null,
+    })
+
+    const wrapper = mountGallery()
+    await flushPromises()
+
+    await wrapper.findAll('[data-view-mode="timeline"]')[0]!.trigger('click')
+    await flushPromises()
+
+    const rail = wrapper.find('.timeline-year-rail')
+    expect(rail.exists()).toBe(true)
+    expect(rail.text()).toContain('2026')
+    expect(rail.text()).toContain('2025')
+    expect(rail.text()).toContain('7月')
+    expect(rail.text()).toContain('6月')
+    expect(rail.text()).not.toContain('（4）')
+    expect(rail.text()).not.toContain('（2）')
+
+    await rail.find('.timeline-year-button').trigger('click')
+    await flushPromises()
+
+    expect(listMock.mock.calls.at(-1)?.[3]).toBe('2026-07')
+  })
 })

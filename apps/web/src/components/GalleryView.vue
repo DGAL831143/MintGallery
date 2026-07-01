@@ -32,7 +32,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { authApi, collectionApi, folderApi, galleryApi, timelineApi } from '../api'
-import { formatMonth, groupTimelineAssets } from '../timeline'
+import { formatMonth, groupTimelineAssets, groupTimelineMonths, timelineMonthLabel } from '../timeline'
 import type {
   Asset,
   FeaturedCollection,
@@ -101,6 +101,13 @@ type FeaturedWallItem = {
 const activeFolder = computed(() => folders.value.find((folder) => folder.id === activeFolderId.value) ?? null)
 const selectedCount = computed(() => selectedIds.value.size)
 const timelineGroups = computed(() => groupTimelineAssets(assets.value))
+const timelineYearGroups = computed(() => groupTimelineMonths(months.value))
+const activeTimelineYear = computed(() =>
+  activeMonth.value?.slice(0, 4)
+  ?? timelineGroups.value[0]?.month.slice(0, 4)
+  ?? timelineYearGroups.value[0]?.year
+  ?? null,
+)
 const featuredCollectionMap = computed(() => new Map(featuredCollections.value.map((collection) => [collection.id, collection])))
 const featuredWallItems = computed<FeaturedWallItem[]>(() => {
   const seen = new Set<string>()
@@ -334,6 +341,11 @@ function chooseMonth(month: string | null) {
   resetBrowsingFilters()
   viewMode.value = 'TIMELINE'
   activeMonth.value = month
+}
+
+function chooseTimelineYear(year: string) {
+  const firstMonth = timelineYearGroups.value.find((group) => group.year === year)?.months[0]?.month
+  if (firstMonth) chooseMonth(firstMonth)
 }
 
 function chooseLibraryFilter(filter: GalleryFilter) {
@@ -611,7 +623,7 @@ onMounted(() => {
             <button :class="{ active: galleryFilter === 'ALL' && viewMode === 'FEATURED' }" @click="chooseView('FEATURED')">
               <Sparkles :size="18" /><span>精选</span>
             </button>
-            <button :class="{ active: galleryFilter === 'ALL' && viewMode === 'TIMELINE' }" @click="chooseView('TIMELINE')">
+            <button data-view-mode="timeline" :class="{ active: galleryFilter === 'ALL' && viewMode === 'TIMELINE' }" @click="chooseView('TIMELINE')">
               <CalendarDays :size="18" /><span>时间轴</span>
             </button>
             <button data-gallery-filter="favorites" :class="{ active: galleryFilter === 'FAVORITES' }" @click="chooseLibraryFilter('FAVORITES')">
@@ -666,7 +678,7 @@ onMounted(() => {
           <div class="mobile-view-controls">
             <div class="segmented compact" aria-label="浏览方式">
               <button :class="{ active: galleryFilter === 'ALL' && viewMode === 'FEATURED' }" @click="chooseView('FEATURED')"><Sparkles :size="16" />精选</button>
-              <button :class="{ active: galleryFilter === 'ALL' && viewMode === 'TIMELINE' }" @click="chooseView('TIMELINE')"><CalendarDays :size="16" />时间轴</button>
+              <button data-view-mode="timeline" :class="{ active: galleryFilter === 'ALL' && viewMode === 'TIMELINE' }" @click="chooseView('TIMELINE')"><CalendarDays :size="16" />时间轴</button>
             </div>
             <label v-if="galleryFilter !== 'DELETED' && viewMode === 'TIMELINE'" class="month-select">
               <CalendarDays :size="17" />
@@ -841,21 +853,47 @@ onMounted(() => {
               <span>{{ emptyMessage }}</span>
             </div>
 
-            <div v-else-if="viewMode === 'TIMELINE'" class="timeline-view">
-              <section v-for="group in timelineGroups" :key="group.month" class="timeline-section">
-                <header><h2>{{ group.label }}</h2><span>{{ group.entries.length }} 项</span></header>
-                <div class="timeline-grid">
-                  <MediaTile
-                    v-for="entry in group.entries"
-                    :key="entry.asset.id"
-                    :asset="entry.asset"
-                    :selected="selectedIds.has(entry.asset.id)"
-                    :selecting="selectionMode"
-                    ratio="1 / 1"
-                    @activate="openAsset(entry.asset.id, entry.index)"
-                  />
+            <div v-else-if="viewMode === 'TIMELINE'" class="timeline-layout">
+              <div class="timeline-view">
+                <section v-for="group in timelineGroups" :key="group.month" class="timeline-section">
+                  <header><h2>{{ group.label }}</h2><span>{{ group.entries.length }} 项</span></header>
+                  <div class="timeline-grid">
+                    <MediaTile
+                      v-for="entry in group.entries"
+                      :key="entry.asset.id"
+                      :asset="entry.asset"
+                      :selected="selectedIds.has(entry.asset.id)"
+                      :selecting="selectionMode"
+                      ratio="1 / 1"
+                      @activate="openAsset(entry.asset.id, entry.index)"
+                    />
+                  </div>
+                </section>
+              </div>
+              <nav v-if="timelineYearGroups.length" class="timeline-year-rail" aria-label="年份时间轴">
+                <div
+                  v-for="yearGroup in timelineYearGroups"
+                  :key="yearGroup.year"
+                  class="timeline-year-item"
+                  :class="{ active: activeTimelineYear === yearGroup.year }"
+                >
+                  <button class="timeline-year-button" type="button" @click="chooseTimelineYear(yearGroup.year)">
+                    {{ yearGroup.year }}
+                  </button>
+                  <div class="timeline-year-popover" role="tooltip">
+                    <strong>{{ yearGroup.year }}</strong>
+                    <button
+                      v-for="month in yearGroup.months"
+                      :key="month.month"
+                      type="button"
+                      :class="{ active: activeMonth === month.month }"
+                      @click="chooseMonth(month.month)"
+                    >
+                      {{ timelineMonthLabel(month.month) }}
+                    </button>
+                  </div>
                 </div>
-              </section>
+              </nav>
             </div>
 
             <section v-else class="media-grid" :class="gridDensityClass" aria-label="全部照片">

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Asset } from './types'
-import { formatMonth, groupTimelineAssets } from './timeline'
+import { formatMonth, groupTimelineAssets, groupTimelineMonths, timelineMonthLabel } from './timeline'
 
 function asset(id: string, shootingTime: string | null, uploadedAt: string): Asset {
   return {
@@ -44,5 +44,17 @@ describe('timeline grouping', () => {
     expect(groups.map((group) => group.month)).toEqual(['2024-06', '2024-01'])
     expect(groups[1]?.entries[0]).toMatchObject({ index: 1, asset: { id: 'fallback' } })
     expect(formatMonth('2024-06')).toBe('2024年6月')
+  })
+
+  it('groups months by year and keeps hover month labels count-free', () => {
+    const groups = groupTimelineMonths([
+      { month: '2026-07', count: 4 },
+      { month: '2026-06', count: 2 },
+      { month: '2025-12', count: 1 },
+    ])
+
+    expect(groups.map((group) => group.year)).toEqual(['2026', '2025'])
+    expect(groups[0]?.months.map((month) => timelineMonthLabel(month.month))).toEqual(['7月', '6月'])
+    expect(timelineMonthLabel('2025-12')).toBe('12月')
   })
 })

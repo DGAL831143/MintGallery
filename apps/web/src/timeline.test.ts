@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { Asset } from './types'
-import { formatMonth, groupTimelineAssets, groupTimelineMonths, timelineMonthLabel } from './timeline'
+import {
+  buildTimelineScrubber,
+  formatMonth,
+  groupTimelineAssets,
+  groupTimelineMonths,
+  timelineMonthLabel,
+} from './timeline'
 
 function asset(id: string, shootingTime: string | null, uploadedAt: string): Asset {
   return {
@@ -56,5 +62,24 @@ describe('timeline grouping', () => {
     expect(groups.map((group) => group.year)).toEqual(['2026', '2025'])
     expect(groups[0]?.months.map((month) => timelineMonthLabel(month.month))).toEqual(['7月', '6月'])
     expect(timelineMonthLabel('2025-12')).toBe('12月')
+  })
+
+  it('positions scrubber years and month dots by real calendar distance', () => {
+    const scrubber = buildTimelineScrubber([
+      { month: '2013-08', count: 1 },
+      { month: '2010-08', count: 1 },
+      { month: '2002-08', count: 1 },
+    ])
+
+    expect(scrubber.points.map((point) => point.month)).toEqual(['2013-08', '2010-08', '2002-08'])
+    expect(scrubber.points[0]?.position).toBe(0)
+    expect(scrubber.points[2]?.position).toBe(100)
+    expect(scrubber.points[1]?.position).toBeGreaterThan(25)
+    expect(scrubber.points[1]?.position).toBeLessThan(45)
+    expect(scrubber.points[1]?.label).toBe('2010年8月')
+    expect(scrubber.years.map((year) => year.year)).toEqual([
+      '2013', '2012', '2011', '2010', '2009', '2008', '2007', '2006', '2005', '2004', '2003', '2002',
+    ])
+    expect(scrubber.years.find((year) => year.year === '2012')?.month).toBeNull()
   })
 })

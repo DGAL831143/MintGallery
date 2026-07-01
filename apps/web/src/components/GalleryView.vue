@@ -32,7 +32,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { authApi, collectionApi, folderApi, galleryApi, timelineApi } from '../api'
-import { formatMonth, groupTimelineAssets, groupTimelineMonths, timelineMonthLabel } from '../timeline'
+import { buildTimelineScrubber, formatMonth, groupTimelineAssets } from '../timeline'
 import type {
   Asset,
   FeaturedCollection,
@@ -101,11 +101,11 @@ type FeaturedWallItem = {
 const activeFolder = computed(() => folders.value.find((folder) => folder.id === activeFolderId.value) ?? null)
 const selectedCount = computed(() => selectedIds.value.size)
 const timelineGroups = computed(() => groupTimelineAssets(assets.value))
-const timelineYearGroups = computed(() => groupTimelineMonths(months.value))
-const activeTimelineYear = computed(() =>
-  activeMonth.value?.slice(0, 4)
-  ?? timelineGroups.value[0]?.month.slice(0, 4)
-  ?? timelineYearGroups.value[0]?.year
+const timelineScrubber = computed(() => buildTimelineScrubber(months.value))
+const activeTimelineMonth = computed(() =>
+  activeMonth.value
+  ?? timelineGroups.value[0]?.month
+  ?? timelineScrubber.value.points[0]?.month
   ?? null,
 )
 const featuredCollectionMap = computed(() => new Map(featuredCollections.value.map((collection) => [collection.id, collection])))
@@ -344,7 +344,7 @@ function chooseMonth(month: string | null) {
 }
 
 function chooseTimelineYear(year: string) {
-  const firstMonth = timelineYearGroups.value.find((group) => group.year === year)?.months[0]?.month
+  const firstMonth = timelineScrubber.value.years.find((item) => item.year === year)?.month
   if (firstMonth) chooseMonth(firstMonth)
 }
 
@@ -870,29 +870,32 @@ onMounted(() => {
                   </div>
                 </section>
               </div>
-              <nav v-if="timelineYearGroups.length" class="timeline-year-rail" aria-label="年份时间轴">
-                <div
-                  v-for="yearGroup in timelineYearGroups"
-                  :key="yearGroup.year"
-                  class="timeline-year-item"
-                  :class="{ active: activeTimelineYear === yearGroup.year }"
+              <nav v-if="timelineScrubber.points.length" class="timeline-scrubber" aria-label="真实时间轴">
+                <div class="timeline-scrubber-track" aria-hidden="true"></div>
+                <button
+                  v-for="yearItem in timelineScrubber.years"
+                  :key="yearItem.year"
+                  class="timeline-scrubber-year"
+                  type="button"
+                  :class="{ disabled: !yearItem.month }"
+                  :style="{ top: `${yearItem.position}%` }"
+                  :disabled="!yearItem.month"
+                  @click="chooseTimelineYear(yearItem.year)"
                 >
-                  <button class="timeline-year-button" type="button" @click="chooseTimelineYear(yearGroup.year)">
-                    {{ yearGroup.year }}
-                  </button>
-                  <div class="timeline-year-popover" role="tooltip">
-                    <strong>{{ yearGroup.year }}</strong>
-                    <button
-                      v-for="month in yearGroup.months"
-                      :key="month.month"
-                      type="button"
-                      :class="{ active: activeMonth === month.month }"
-                      @click="chooseMonth(month.month)"
-                    >
-                      {{ timelineMonthLabel(month.month) }}
-                    </button>
-                  </div>
-                </div>
+                  {{ yearItem.year }}
+                </button>
+                <button
+                  v-for="point in timelineScrubber.points"
+                  :key="point.month"
+                  class="timeline-scrubber-point"
+                  type="button"
+                  :class="{ active: activeTimelineMonth === point.month }"
+                  :style="{ top: `${point.position}%` }"
+                  :aria-label="`跳转到${point.label}`"
+                  @click="chooseMonth(point.month)"
+                >
+                  <span class="timeline-scrubber-tooltip">{{ point.label }}</span>
+                </button>
               </nav>
             </div>
 

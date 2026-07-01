@@ -244,7 +244,7 @@ describe('GalleryView filters', () => {
     expect(renderedIds(wrapper)).toEqual(['visible-asset'])
   })
 
-  it('renders a count-free year rail in the timeline view', async () => {
+  it('renders a count-free real-time scrubber in the timeline view', async () => {
     monthsMock.mockResolvedValue({
       months: [
         { month: '2026-07', count: 4 },
@@ -266,16 +266,17 @@ describe('GalleryView filters', () => {
     await wrapper.findAll('[data-view-mode="timeline"]')[0]!.trigger('click')
     await flushPromises()
 
-    const rail = wrapper.find('.timeline-year-rail')
-    expect(rail.exists()).toBe(true)
-    expect(rail.text()).toContain('2026')
-    expect(rail.text()).toContain('2025')
-    expect(rail.text()).toContain('7月')
-    expect(rail.text()).toContain('6月')
-    expect(rail.text()).not.toContain('（4）')
-    expect(rail.text()).not.toContain('（2）')
+    const scrubber = wrapper.find('.timeline-scrubber')
+    expect(scrubber.exists()).toBe(true)
+    expect(scrubber.text()).toContain('2026')
+    expect(scrubber.text()).toContain('2025')
+    expect(scrubber.text()).toContain('2026年7月')
+    expect(scrubber.text()).toContain('2026年6月')
+    expect(scrubber.text()).not.toContain('（4）')
+    expect(scrubber.text()).not.toContain('（2）')
+    expect(scrubber.findAll('.timeline-scrubber-point')[0]?.attributes('style')).toContain('top: 0%')
 
-    await rail.find('.timeline-year-button').trigger('click')
+    await scrubber.find('.timeline-scrubber-point').trigger('click')
     await flushPromises()
 
     expect(listMock.mock.calls.at(-1)?.[3]).toBe('2026-07')

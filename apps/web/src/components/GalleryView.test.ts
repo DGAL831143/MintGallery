@@ -76,6 +76,8 @@ function asset(id: string, changes: Partial<Asset> = {}): Asset {
     liveVideoUrl: null,
     thumbnailUrl: `/api/media/${id}-thumb`,
     previewUrl: `/api/media/${id}-preview`,
+    edited: false,
+    editedAt: null,
     backupStatus: 'NOT_CONFIGURED',
     ...changes,
   }

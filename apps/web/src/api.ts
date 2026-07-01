@@ -3,6 +3,7 @@ import type {
   FeaturedCollection,
   Folder,
   GalleryFilter,
+  ImageEditOperations,
   ImportRunResult,
   ImportScanResult,
   MediaTypeFilter,
@@ -112,6 +113,15 @@ export const galleryApi = {
     api<{ assets: Asset[] }>('/api/assets', {
       method: 'PATCH',
       body: JSON.stringify({ assetIds, ...changes }),
+    }),
+  editAsset: (id: string, operations: ImageEditOperations) =>
+    api<{ asset: Asset }>(`/api/assets/${id}/edit`, {
+      method: 'POST',
+      body: JSON.stringify(operations),
+    }),
+  resetAssetEdit: (id: string) =>
+    api<{ asset: Asset }>(`/api/assets/${id}/edit/reset`, {
+      method: 'POST',
     }),
 }
 

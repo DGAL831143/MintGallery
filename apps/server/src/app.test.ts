@@ -133,6 +133,107 @@ describe('MintGallery API', () => {
     expect(cachedThumbnail.statusCode).toBe(304)
   })
 
+  it('saves non-destructive image edits and restores the original derivatives', async () => {
+    const bootstrap = await app.inject({
+      method: 'POST',
+      url: '/api/bootstrap',
+      payload: { username: 'owner', password: 'strong-password' },
+    })
+    const ownerCookie = bootstrap.headers['set-cookie']?.split(';')[0]
+    await app.inject({
+      method: 'POST',
+      url: '/api/users',
+      headers: { cookie: ownerCookie },
+      payload: { username: 'family', temporaryPassword: 'temporary-password' },
+    })
+    const memberLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'family', password: 'temporary-password' },
+    })
+    const memberCookie = memberLogin.headers['set-cookie']?.split(';')[0]
+
+    const boundary = '----mintgallery-edit-boundary'
+    const image = await sharp({
+      create: { width: 40, height: 30, channels: 3, background: '#52b788' },
+    }).png().toBuffer()
+    const payload = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="editable.png"\r\nContent-Type: image/png\r\n\r\n`,
+      ),
+      image,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ])
+    const upload = await app.inject({
+      method: 'POST',
+      url: '/api/assets?visibility=PRIVATE',
+      headers: { cookie: ownerCookie, 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload,
+    })
+    expect(upload.statusCode).toBe(201)
+    const originalAsset = upload.json().asset
+    const originalThumbnailUrl = originalAsset.thumbnailUrl
+    const originalPreviewUrl = originalAsset.previewUrl
+    const originalUrl = originalAsset.originalUrl
+
+    const forbidden = await app.inject({
+      method: 'POST',
+      url: `/api/assets/${originalAsset.id}/edit`,
+      headers: { cookie: memberCookie },
+      payload: { crop: { x: 0, y: 0, width: 1, height: 1 }, rotate: 0, flipX: false, flipY: false },
+    })
+    expect(forbidden.statusCode).toBe(403)
+
+    const edited = await app.inject({
+      method: 'POST',
+      url: `/api/assets/${originalAsset.id}/edit`,
+      headers: { cookie: ownerCookie },
+      payload: {
+        crop: { x: 0.25, y: 0, width: 0.5, height: 1 },
+        rotate: 90,
+        flipX: true,
+        flipY: false,
+      },
+    })
+    expect(edited.statusCode).toBe(200)
+    const editedAsset = edited.json().asset
+    expect(editedAsset).toMatchObject({
+      id: originalAsset.id,
+      edited: true,
+      editedAt: expect.any(String),
+      width: 30,
+      height: 20,
+      originalUrl,
+    })
+    expect(editedAsset.thumbnailUrl).not.toBe(originalThumbnailUrl)
+    expect(editedAsset.previewUrl).not.toBe(originalPreviewUrl)
+
+    const editedPreview = await app.inject({
+      method: 'GET',
+      url: editedAsset.previewUrl,
+      headers: { cookie: ownerCookie },
+    })
+    expect(editedPreview.statusCode).toBe(200)
+    expect(editedPreview.headers['content-type']).toContain('image/webp')
+    const editedMetadata = await sharp(editedPreview.rawPayload).metadata()
+    expect(editedMetadata).toMatchObject({ width: 30, height: 20, format: 'webp' })
+
+    const reset = await app.inject({
+      method: 'POST',
+      url: `/api/assets/${originalAsset.id}/edit/reset`,
+      headers: { cookie: ownerCookie },
+    })
+    expect(reset.statusCode).toBe(200)
+    expect(reset.json().asset).toMatchObject({
+      id: originalAsset.id,
+      edited: false,
+      editedAt: null,
+      thumbnailUrl: originalThumbnailUrl,
+      previewUrl: originalPreviewUrl,
+      originalUrl,
+    })
+  })
+
   it('updates privacy masking, visibility, and search without weakening permissions', async () => {
     const bootstrap = await app.inject({
       method: 'POST',

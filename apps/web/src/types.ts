@@ -32,7 +32,21 @@ export interface Asset {
   liveVideoUrl: string | null
   thumbnailUrl: string | null
   previewUrl: string | null
+  edited: boolean
+  editedAt: string | null
   backupStatus: 'NOT_CONFIGURED'
+}
+
+export interface ImageEditOperations {
+  crop: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+  rotate: 0 | 90 | 180 | 270
+  flipX: boolean
+  flipY: boolean
 }
 
 export interface TimelineMonth {

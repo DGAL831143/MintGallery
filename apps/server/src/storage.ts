@@ -41,6 +41,18 @@ export interface ImageDerivatives {
   previewPath: string
 }
 
+export interface ImageEditOperations {
+  crop: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+  rotate: 0 | 90 | 180 | 270
+  flipX: boolean
+  flipY: boolean
+}
+
 export function ensureStorageDirectories(config: AppConfig): void {
   for (const directory of [
     config.dataDirectory,
@@ -180,6 +192,65 @@ export async function createImageDerivatives(
   return {
     width: metadata.autoOrient?.width ?? metadata.width ?? null,
     height: metadata.autoOrient?.height ?? metadata.height ?? null,
+    thumbnailPath,
+    previewPath,
+  }
+}
+
+export async function createEditedImageDerivatives(
+  originalPath: string,
+  assetId: string,
+  editId: string,
+  operations: ImageEditOperations,
+  config: AppConfig,
+): Promise<ImageDerivatives> {
+  const directory = path.join(config.derivativesDirectory, assetId, 'edits', editId)
+  mkdirSync(directory, { recursive: true })
+  const thumbnailPath = path.join(directory, 'thumbnail.webp')
+  const previewPath = path.join(directory, 'preview.webp')
+  const oriented = await sharp(originalPath, { failOn: 'warning' }).rotate().toBuffer()
+  const image = sharp(oriented, { failOn: 'warning' })
+  const metadata = await image.metadata()
+  const sourceWidth = metadata.width
+  const sourceHeight = metadata.height
+  if (!sourceWidth || !sourceHeight) {
+    throw new Error('无法读取图片尺寸')
+  }
+
+  const left = Math.min(Math.max(Math.round(operations.crop.x * sourceWidth), 0), sourceWidth - 1)
+  const top = Math.min(Math.max(Math.round(operations.crop.y * sourceHeight), 0), sourceHeight - 1)
+  const cropWidth = Math.max(
+    1,
+    Math.min(sourceWidth - left, Math.round(operations.crop.width * sourceWidth)),
+  )
+  const cropHeight = Math.max(
+    1,
+    Math.min(sourceHeight - top, Math.round(operations.crop.height * sourceHeight)),
+  )
+
+  const cropped = await image.clone().extract({ left, top, width: cropWidth, height: cropHeight }).toBuffer()
+  let edited = sharp(cropped, { failOn: 'warning' })
+  if (operations.rotate !== 0) edited = edited.rotate(operations.rotate)
+  if (operations.flipY) edited = edited.flip()
+  if (operations.flipX) edited = edited.flop()
+
+  await Promise.all([
+    edited
+      .clone()
+      .resize({ width: 480, height: 480, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 78 })
+      .toFile(thumbnailPath),
+    edited
+      .clone()
+      .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 84 })
+      .toFile(previewPath),
+  ])
+
+  const rotated = operations.rotate === 90 || operations.rotate === 270
+  return {
+    width: rotated ? cropHeight : cropWidth,
+    height: rotated ? cropWidth : cropHeight,
     thumbnailPath,
     previewPath,
   }

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, rmSync, statSync } from 'node:fs'
 import path from 'node:path'
 import cookie from '@fastify/cookie'
 import multipart from '@fastify/multipart'
@@ -30,12 +30,16 @@ import {
 import { backfillShootingTimes, extractShootingTime } from './metadata.js'
 import { importExternalFolderCandidates, scanExternalFolder } from './folder-import.js'
 import {
+  createEditedImageDerivatives,
   createReadStream,
   discardTemporaryUpload,
   ensureStorageDirectories,
+  fileSize,
   receiveUpload,
   resolveStoragePath,
   storageStats,
+  toRelativeStoragePath,
+  type ImageEditOperations,
   type SavedUpload,
 } from './storage.js'
 
@@ -87,6 +91,10 @@ interface AssetRow {
   live_video_file_id: string | null
   thumbnail_file_id: string | null
   preview_file_id: string | null
+  active_edit_id: string | null
+  active_edit_created_at: number | null
+  active_edit_width: number | null
+  active_edit_height: number | null
 }
 
 interface MediaRow {
@@ -317,6 +325,47 @@ function cleanAssetIds(value: unknown, max = 100): string[] {
   return [...new Set(value.filter((id): id is string => typeof id === 'string' && id.length > 0))].slice(0, max)
 }
 
+function recordBody(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function numberOrDefault(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function normalizeEditOperations(value: unknown): ImageEditOperations | null {
+  const body = recordBody(value) ?? {}
+  const rawCrop = recordBody(body.crop) ?? {}
+  const crop = {
+    x: numberOrDefault(rawCrop.x, 0),
+    y: numberOrDefault(rawCrop.y, 0),
+    width: numberOrDefault(rawCrop.width, 1),
+    height: numberOrDefault(rawCrop.height, 1),
+  }
+  if (
+    crop.x < 0 ||
+    crop.y < 0 ||
+    crop.width <= 0 ||
+    crop.height <= 0 ||
+    crop.x + crop.width > 1.000001 ||
+    crop.y + crop.height > 1.000001
+  ) {
+    return null
+  }
+
+  const rotate = numberOrDefault(body.rotate, 0)
+  if (rotate !== 0 && rotate !== 90 && rotate !== 180 && rotate !== 270) return null
+
+  return {
+    crop,
+    rotate: rotate as ImageEditOperations['rotate'],
+    flipX: typeof body.flipX === 'boolean' ? body.flipX : false,
+    flipY: typeof body.flipY === 'boolean' ? body.flipY : false,
+  }
+}
+
 function canReadAsset(user: SessionUser, row: AssetRow): boolean {
   if (row.deleted_at !== null && user.role !== 'ADMIN' && row.owner_id !== user.id) return false
   return user.role === 'ADMIN' || row.visibility === 'SHARED' || row.owner_id === user.id
@@ -345,10 +394,26 @@ const assetFileColumns = `
     (SELECT id FROM asset_files
       WHERE asset_id = a.id AND kind = 'ORIGINAL_VIDEO' AND a.type = 'LIVE_PHOTO' LIMIT 1)
   ) AS live_video_file_id,
-  (SELECT id FROM asset_files
-    WHERE asset_id = a.id AND kind = 'THUMBNAIL' LIMIT 1) AS thumbnail_file_id,
-  (SELECT id FROM asset_files
-    WHERE asset_id = a.id AND kind = 'PREVIEW' LIMIT 1) AS preview_file_id
+  COALESCE(
+    (SELECT thumbnail_file_id FROM asset_edits
+      WHERE asset_id = a.id AND active = 1 ORDER BY created_at DESC LIMIT 1),
+    (SELECT id FROM asset_files
+      WHERE asset_id = a.id AND kind = 'THUMBNAIL' LIMIT 1)
+  ) AS thumbnail_file_id,
+  COALESCE(
+    (SELECT preview_file_id FROM asset_edits
+      WHERE asset_id = a.id AND active = 1 ORDER BY created_at DESC LIMIT 1),
+    (SELECT id FROM asset_files
+      WHERE asset_id = a.id AND kind = 'PREVIEW' LIMIT 1)
+  ) AS preview_file_id,
+  (SELECT id FROM asset_edits
+    WHERE asset_id = a.id AND active = 1 ORDER BY created_at DESC LIMIT 1) AS active_edit_id,
+  (SELECT created_at FROM asset_edits
+    WHERE asset_id = a.id AND active = 1 ORDER BY created_at DESC LIMIT 1) AS active_edit_created_at,
+  (SELECT width FROM asset_edits
+    WHERE asset_id = a.id AND active = 1 ORDER BY created_at DESC LIMIT 1) AS active_edit_width,
+  (SELECT height FROM asset_edits
+    WHERE asset_id = a.id AND active = 1 ORDER BY created_at DESC LIMIT 1) AS active_edit_height
 `
 
 function sessionUser(database: DatabaseSync, token: string | undefined): SessionUser | null {
@@ -391,8 +456,8 @@ function serializeAsset(row: AssetRow) {
     originalName: row.original_name,
     mimeType: row.mime_type,
     sizeBytes: row.size_bytes,
-    width: row.width,
-    height: row.height,
+    width: row.active_edit_width ?? row.width,
+    height: row.active_edit_height ?? row.height,
     durationMs: row.duration_ms,
     shootingTime: row.shooting_time === null ? null : new Date(row.shooting_time).toISOString(),
     uploadedAt: new Date(row.uploaded_at).toISOString(),
@@ -403,6 +468,8 @@ function serializeAsset(row: AssetRow) {
     liveVideoUrl: mediaUrl(row.live_video_file_id),
     thumbnailUrl: mediaUrl(row.thumbnail_file_id),
     previewUrl: mediaUrl(row.preview_file_id),
+    edited: row.active_edit_id !== null,
+    editedAt: row.active_edit_created_at === null ? null : new Date(row.active_edit_created_at).toISOString(),
     backupStatus: 'NOT_CONFIGURED' as const,
   }
 }
@@ -459,7 +526,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.9.2' }))
+  app.get('/api/health', async () => ({ ok: true, version: '1.0.0' }))
 
   app.get('/api/bootstrap/status', async () => {
     const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }
@@ -907,6 +974,115 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       .get(assetId) as unknown as AssetRow
 
     return reply.code(201).send({ asset: serializeAsset(created) })
+  })
+
+  app.post('/api/assets/:id/edit', { preHandler: requireUser }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const existing = findAsset(database, id)
+    if (!existing) return reply.code(404).send({ message: '照片不存在' })
+    if (!canManageAsset(request.currentUser!, existing)) {
+      return reply.code(403).send({ message: '只能编辑自己上传的照片' })
+    }
+    if (existing.deleted_at !== null) {
+      return reply.code(409).send({ message: '回收站中的照片不能编辑' })
+    }
+    if (existing.status !== 'READY') {
+      return reply.code(409).send({ message: '照片仍在处理或处理失败，暂时不能编辑' })
+    }
+    if (existing.type === 'VIDEO') {
+      return reply.code(400).send({ message: '视频暂不支持网页编辑' })
+    }
+
+    const operations = normalizeEditOperations(request.body)
+    if (!operations) {
+      return reply.code(400).send({ message: '编辑参数无效' })
+    }
+
+    const original = database
+      .prepare(`
+        SELECT relative_path
+        FROM asset_files
+        WHERE asset_id = ? AND kind = 'ORIGINAL_IMAGE'
+        LIMIT 1
+      `)
+      .get(id) as { relative_path: string } | undefined
+    if (!original) return reply.code(404).send({ message: '原始图片文件不存在' })
+
+    const originalPath = resolveStoragePath(config, original.relative_path)
+    if (!existsSync(originalPath)) {
+      return reply.code(404).send({ message: '磁盘原始图片不存在' })
+    }
+
+    const editId = randomUUID()
+    const derivatives = await createEditedImageDerivatives(originalPath, id, editId, operations, config)
+    const editDirectory = path.dirname(derivatives.thumbnailPath)
+    const thumbnailFileId = randomUUID()
+    const previewFileId = randomUUID()
+    const now = Date.now()
+
+    database.exec('BEGIN')
+    try {
+      database.prepare('UPDATE asset_edits SET active = 0 WHERE asset_id = ? AND active = 1').run(id)
+      const insertFile = database.prepare(`
+        INSERT INTO asset_files (id, asset_id, kind, relative_path, mime_type, size_bytes)
+        VALUES (?, ?, ?, ?, 'image/webp', ?)
+      `)
+      insertFile.run(
+        thumbnailFileId,
+        id,
+        'EDIT_THUMBNAIL',
+        toRelativeStoragePath(config, derivatives.thumbnailPath),
+        fileSize(derivatives.thumbnailPath),
+      )
+      insertFile.run(
+        previewFileId,
+        id,
+        'EDIT_PREVIEW',
+        toRelativeStoragePath(config, derivatives.previewPath),
+        fileSize(derivatives.previewPath),
+      )
+      database.prepare(`
+        INSERT INTO asset_edits (
+          id, asset_id, created_by, operations_json, thumbnail_file_id, preview_file_id,
+          width, height, active, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+      `).run(
+        editId,
+        id,
+        request.currentUser!.id,
+        JSON.stringify(operations),
+        thumbnailFileId,
+        previewFileId,
+        derivatives.width,
+        derivatives.height,
+        now,
+      )
+      database.exec('COMMIT')
+    } catch (error) {
+      try {
+        database.exec('ROLLBACK')
+      } catch {
+        // Preserve the original database error if SQLite already rolled back.
+      }
+      rmSync(editDirectory, { recursive: true, force: true })
+      throw error
+    }
+
+    const updated = findAsset(database, id)!
+    return { asset: serializeAsset(updated) }
+  })
+
+  app.post('/api/assets/:id/edit/reset', { preHandler: requireUser }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const existing = findAsset(database, id)
+    if (!existing) return reply.code(404).send({ message: '照片不存在' })
+    if (!canManageAsset(request.currentUser!, existing)) {
+      return reply.code(403).send({ message: '只能编辑自己上传的照片' })
+    }
+
+    database.prepare('UPDATE asset_edits SET active = 0 WHERE asset_id = ? AND active = 1').run(id)
+    const updated = findAsset(database, id)!
+    return { asset: serializeAsset(updated) }
   })
 
   app.patch('/api/assets/:id', { preHandler: requireUser }, async (request, reply) => {

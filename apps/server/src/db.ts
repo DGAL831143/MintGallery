@@ -54,11 +54,25 @@ export function openDatabase(databasePath: string): DatabaseSync {
       id TEXT PRIMARY KEY,
       asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
       kind TEXT NOT NULL CHECK (kind IN (
-        'ORIGINAL_IMAGE', 'ORIGINAL_VIDEO', 'THUMBNAIL', 'PREVIEW', 'LIVE_PREVIEW', 'POSTER'
+        'ORIGINAL_IMAGE', 'ORIGINAL_VIDEO', 'THUMBNAIL', 'PREVIEW', 'LIVE_PREVIEW',
+        'EDIT_THUMBNAIL', 'EDIT_PREVIEW', 'POSTER'
       )),
       relative_path TEXT NOT NULL UNIQUE,
       mime_type TEXT NOT NULL,
       size_bytes INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS asset_edits (
+      id TEXT PRIMARY KEY,
+      asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+      created_by TEXT NOT NULL REFERENCES users(id),
+      operations_json TEXT NOT NULL,
+      thumbnail_file_id TEXT NOT NULL REFERENCES asset_files(id) ON DELETE CASCADE,
+      preview_file_id TEXT NOT NULL REFERENCES asset_files(id) ON DELETE CASCADE,
+      width INTEGER,
+      height INTEGER,
+      active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+      created_at INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS folders (
@@ -82,14 +96,16 @@ export function openDatabase(databasePath: string): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_assets_timeline
       ON assets(COALESCE(shooting_time, uploaded_at) DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_asset_files_asset ON asset_files(asset_id);
+    CREATE INDEX IF NOT EXISTS idx_asset_edits_asset_active ON asset_edits(asset_id, active, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_folders_owner ON folders(owner_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_folder_assets_asset ON folder_assets(asset_id);
   `)
 
+  const requiredAssetFileKinds = ['LIVE_PREVIEW', 'EDIT_THUMBNAIL', 'EDIT_PREVIEW']
   const assetFilesSchema = database
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'asset_files'")
     .get() as { sql: string } | undefined
-  if (assetFilesSchema && !assetFilesSchema.sql.includes('LIVE_PREVIEW')) {
+  if (assetFilesSchema && requiredAssetFileKinds.some((kind) => !assetFilesSchema.sql.includes(kind))) {
     try {
       database.exec(`
         BEGIN;
@@ -99,7 +115,8 @@ export function openDatabase(databasePath: string): DatabaseSync {
           id TEXT PRIMARY KEY,
           asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
           kind TEXT NOT NULL CHECK (kind IN (
-            'ORIGINAL_IMAGE', 'ORIGINAL_VIDEO', 'THUMBNAIL', 'PREVIEW', 'LIVE_PREVIEW', 'POSTER'
+            'ORIGINAL_IMAGE', 'ORIGINAL_VIDEO', 'THUMBNAIL', 'PREVIEW', 'LIVE_PREVIEW',
+            'EDIT_THUMBNAIL', 'EDIT_PREVIEW', 'POSTER'
           )),
           relative_path TEXT NOT NULL UNIQUE,
           mime_type TEXT NOT NULL,

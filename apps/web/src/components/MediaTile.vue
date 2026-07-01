@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, CircleAlert, EyeOff, Film, Sparkles, Star, Trash2 } from 'lucide-vue-next'
+import { Check, CircleAlert, Crop, EyeOff, Film, Sparkles, Star, Trash2 } from 'lucide-vue-next'
 import type { Asset } from '../types'
 
 defineProps<{
@@ -30,6 +30,7 @@ defineEmits<{ activate: [] }>()
     <span v-if="asset.favorite" class="favorite-badge"><Star :size="14" fill="currentColor" />收藏</span>
     <span v-if="asset.deletedAt" class="deleted-badge"><Trash2 :size="14" />最近删除</span>
     <span v-if="asset.privacyMasked" class="privacy-badge"><EyeOff :size="14" />防窥</span>
+    <span v-if="asset.edited" class="edited-badge"><Crop :size="14" />已编辑</span>
     <span v-if="asset.type === 'VIDEO'" class="media-badge"><Film :size="14" />视频</span>
     <span v-else-if="asset.type === 'LIVE_PHOTO'" class="media-badge live-badge"><Sparkles :size="14" />LIVE</span>
     <span v-if="asset.status === 'FAILED'" class="media-error">预览失败</span>

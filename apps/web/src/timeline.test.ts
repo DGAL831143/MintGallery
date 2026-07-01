@@ -28,6 +28,8 @@ function asset(id: string, shootingTime: string | null, uploadedAt: string): Ass
     liveVideoUrl: null,
     thumbnailUrl: null,
     previewUrl: null,
+    edited: false,
+    editedAt: null,
     backupStatus: 'NOT_CONFIGURED',
   }
 }

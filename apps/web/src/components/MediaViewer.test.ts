@@ -4,10 +4,14 @@ import type { Asset } from '../types'
 import MediaViewer from './MediaViewer.vue'
 
 const updateAssetMock = vi.hoisted(() => vi.fn())
+const editAssetMock = vi.hoisted(() => vi.fn())
+const resetAssetEditMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../api', () => ({
   galleryApi: {
     updateAsset: updateAssetMock,
+    editAsset: editAssetMock,
+    resetAssetEdit: resetAssetEditMock,
   },
 }))
 
@@ -36,12 +40,16 @@ const livePhoto: Asset = {
   liveVideoUrl: '/api/assets/live-photo-1/live-video',
   thumbnailUrl: '/api/assets/live-photo-1/thumbnail',
   previewUrl: '/api/assets/live-photo-1/preview',
+  edited: false,
+  editedAt: null,
   backupStatus: 'NOT_CONFIGURED',
 }
 
 describe('MediaViewer', () => {
   beforeEach(() => {
     updateAssetMock.mockReset()
+    editAssetMock.mockReset()
+    resetAssetEditMock.mockReset()
   })
 
   it('does not render the fallback alongside a playable Live Photo', () => {
@@ -139,6 +147,64 @@ describe('MediaViewer', () => {
     await flushPromises()
 
     expect(updateAssetMock).toHaveBeenCalledWith('live-photo-1', { favorite: true })
+
+    wrapper.unmount()
+    pause.mockRestore()
+  })
+
+  it('lets the owner save a non-destructive image edit', async () => {
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    editAssetMock.mockResolvedValue({
+      asset: { ...livePhoto, edited: true, editedAt: '2026-07-01T00:00:00.000Z' },
+    })
+    const wrapper = mount(MediaViewer, {
+      props: {
+        assets: [livePhoto],
+        index: 0,
+        currentUser: { id: 'user-1', username: 'family', role: 'MEMBER', status: 'ACTIVE', mustChangePassword: false },
+      },
+    })
+
+    await wrapper.find('[title="编辑照片"]').trigger('click')
+    expect(wrapper.find('.image-editor-panel').exists()).toBe(true)
+    await wrapper.find('[title="向右旋转"]').trigger('click')
+    const widthSlider = wrapper.findAll('input[type="range"]').at(2)
+    await widthSlider!.setValue('0.5')
+    await wrapper.find('form.image-editor-panel').trigger('submit')
+    await flushPromises()
+
+    expect(editAssetMock).toHaveBeenCalledWith('live-photo-1', {
+      crop: { x: 0, y: 0, width: 0.5, height: 1 },
+      rotate: 90,
+      flipX: false,
+      flipY: false,
+    })
+    expect(wrapper.emitted('updated')?.[0]?.[0]).toMatchObject({ id: 'live-photo-1', edited: true })
+
+    wrapper.unmount()
+    pause.mockRestore()
+  })
+
+  it('lets the owner restore an edited asset from the info panel', async () => {
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    const edited = { ...livePhoto, edited: true, editedAt: '2026-07-01T00:00:00.000Z' }
+    resetAssetEditMock.mockResolvedValue({ asset: { ...edited, edited: false, editedAt: null } })
+    const wrapper = mount(MediaViewer, {
+      props: {
+        assets: [edited],
+        index: 0,
+        currentUser: { id: 'user-1', username: 'family', role: 'MEMBER', status: 'ACTIVE', mustChangePassword: false },
+      },
+    })
+
+    await wrapper.find('[title="照片信息"]').trigger('click')
+    const resetButton = wrapper.findAll('button').find((button) => button.text().includes('恢复原图'))
+    expect(resetButton).toBeTruthy()
+    await resetButton!.trigger('click')
+    await flushPromises()
+
+    expect(resetAssetEditMock).toHaveBeenCalledWith('live-photo-1')
+    expect(wrapper.emitted('updated')?.[0]?.[0]).toMatchObject({ id: 'live-photo-1', edited: false })
 
     wrapper.unmount()
     pause.mockRestore()

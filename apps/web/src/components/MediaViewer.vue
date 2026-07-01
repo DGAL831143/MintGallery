@@ -3,24 +3,30 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ChevronLeft,
   ChevronRight,
+  Crop,
   Download,
   Eye,
   EyeOff,
   Film,
+  FlipHorizontal2,
+  FlipVertical2,
   Info,
   LoaderCircle,
   LockKeyhole,
   Play,
   RotateCcw,
+  RotateCw,
+  Save,
   Star,
   Tags,
   Trash2,
+  Undo2,
   UsersRound,
   X,
 } from 'lucide-vue-next'
 import { galleryApi } from '../api'
 import { formatBytes, formatDate } from '../format'
-import type { Asset, User } from '../types'
+import type { Asset, ImageEditOperations, User } from '../types'
 
 const props = defineProps<{ assets: Asset[]; index: number; currentUser: User }>()
 const emit = defineEmits<{ close: []; change: [index: number]; updated: [asset: Asset] }>()
@@ -36,12 +42,27 @@ const saving = ref(false)
 const actionError = ref('')
 const tagEditing = ref(false)
 const tagInput = ref('')
+const editOpen = ref(false)
+const editSaving = ref(false)
+const editError = ref('')
+const editCrop = ref<ImageEditOperations['crop']>({ x: 0, y: 0, width: 1, height: 1 })
+const editRotate = ref<ImageEditOperations['rotate']>(0)
+const editFlipX = ref(false)
+const editFlipY = ref(false)
 
 const isPrivacyHidden = computed(() => Boolean(asset.value?.privacyMasked && !privacyRevealed.value))
 const canManage = computed(() => Boolean(
   asset.value && (props.currentUser.role === 'ADMIN' || asset.value.ownerId === props.currentUser.id),
 ))
 const canFavorite = computed(() => Boolean(asset.value && !asset.value.deletedAt))
+const canEdit = computed(() => Boolean(
+  asset.value &&
+  canManage.value &&
+  !asset.value.deletedAt &&
+  asset.value.status === 'READY' &&
+  asset.value.type !== 'VIDEO' &&
+  asset.value.previewUrl,
+))
 const typeLabel = computed(() => {
   if (asset.value?.type === 'VIDEO') return '视频'
   if (asset.value?.type === 'LIVE_PHOTO') return '实况照片'
@@ -54,6 +75,15 @@ const displayTitle = computed(() => {
   if (!asset.value) return ''
   return asset.value.tags.length > 0 ? asset.value.tags.join(' · ') : '未设置标签'
 })
+
+const editTransform = computed(() =>
+  `rotate(${editRotate.value}deg) scale(${editFlipX.value ? -1 : 1}, ${editFlipY.value ? -1 : 1})`)
+const editCropStyle = computed(() => ({
+  left: `${editCrop.value.x * 100}%`,
+  top: `${editCrop.value.y * 100}%`,
+  width: `${editCrop.value.width * 100}%`,
+  height: `${editCrop.value.height * 100}%`,
+}))
 
 function cleanTagInput(value: string): string[] {
   const seen = new Set<string>()
@@ -167,6 +197,81 @@ async function saveTags() {
   if (ok) tagEditing.value = false
 }
 
+function resetEditorControls() {
+  editCrop.value = { x: 0, y: 0, width: 1, height: 1 }
+  editRotate.value = 0
+  editFlipX.value = false
+  editFlipY.value = false
+  editError.value = ''
+}
+
+function closeEditor() {
+  editOpen.value = false
+  editError.value = ''
+}
+
+function openEditor() {
+  if (!canEdit.value || isPrivacyHidden.value) return
+  stopLive()
+  resetEditorControls()
+  editOpen.value = true
+}
+
+function setCropValue(field: keyof ImageEditOperations['crop'], value: number) {
+  if (!Number.isFinite(value)) return
+  const nextCrop = { ...editCrop.value, [field]: value }
+  nextCrop.width = Math.min(Math.max(nextCrop.width, 0.05), 1)
+  nextCrop.height = Math.min(Math.max(nextCrop.height, 0.05), 1)
+  nextCrop.x = Math.min(Math.max(nextCrop.x, 0), 1 - nextCrop.width)
+  nextCrop.y = Math.min(Math.max(nextCrop.y, 0), 1 - nextCrop.height)
+  if (nextCrop.x + nextCrop.width > 1) nextCrop.width = 1 - nextCrop.x
+  if (nextCrop.y + nextCrop.height > 1) nextCrop.height = 1 - nextCrop.y
+  editCrop.value = nextCrop
+}
+
+function updateCropField(field: keyof ImageEditOperations['crop'], event: Event) {
+  const target = event.target as HTMLInputElement
+  setCropValue(field, Number(target.value))
+}
+
+function rotateEditor(degrees: -90 | 90) {
+  editRotate.value = ((editRotate.value + degrees + 360) % 360) as ImageEditOperations['rotate']
+}
+
+async function saveEdit() {
+  if (!asset.value || !canEdit.value) return
+  editSaving.value = true
+  editError.value = ''
+  try {
+    const result = await galleryApi.editAsset(asset.value.id, {
+      crop: editCrop.value,
+      rotate: editRotate.value,
+      flipX: editFlipX.value,
+      flipY: editFlipY.value,
+    })
+    emit('updated', result.asset)
+    closeEditor()
+  } catch (reason) {
+    editError.value = reason instanceof Error ? reason.message : '照片编辑保存失败'
+  } finally {
+    editSaving.value = false
+  }
+}
+
+async function resetSavedEdit() {
+  if (!asset.value || !asset.value.edited || !canManage.value) return
+  saving.value = true
+  actionError.value = ''
+  try {
+    const result = await galleryApi.resetAssetEdit(asset.value.id)
+    emit('updated', result.asset)
+  } catch (reason) {
+    actionError.value = reason instanceof Error ? reason.message : '恢复原图失败'
+  } finally {
+    saving.value = false
+  }
+}
+
 function previous() {
   stopLive()
   if (props.index > 0) emit('change', props.index - 1)
@@ -178,7 +283,11 @@ function next() {
 }
 
 function onKey(event: KeyboardEvent) {
-  if (event.key === 'Escape') emit('close')
+  if (event.key === 'Escape') {
+    if (editOpen.value) closeEditor()
+    else emit('close')
+  }
+  if (editOpen.value) return
   if (event.key === 'ArrowLeft') previous()
   if (event.key === 'ArrowRight') next()
 }
@@ -194,6 +303,8 @@ watch(() => asset.value?.id, () => {
   actionError.value = ''
   tagInput.value = asset.value?.tags.join('\n') ?? ''
   tagEditing.value = false
+  closeEditor()
+  resetEditorControls()
 })
 </script>
 
@@ -226,6 +337,17 @@ watch(() => asset.value?.id, () => {
         @click="updateAsset({ favorite: !asset.favorite })"
       >
         <Star :size="20" :fill="asset.favorite ? 'currentColor' : 'none'" />
+      </button>
+      <button
+        v-if="canEdit"
+        class="icon-button viewer-action"
+        type="button"
+        :class="{ active: editOpen }"
+        title="编辑照片"
+        :disabled="saving || editSaving || isPrivacyHidden"
+        @click="openEditor"
+      >
+        <Crop :size="20" />
       </button>
       <button class="icon-button viewer-action" type="button" :class="{ active: infoOpen }" title="照片信息" @click="infoOpen = !infoOpen">
         <Info :size="20" />
@@ -308,6 +430,93 @@ watch(() => asset.value?.id, () => {
       </div>
     </div>
 
+    <div v-if="editOpen" class="image-editor-backdrop" role="dialog" aria-modal="true" aria-label="编辑照片">
+      <form class="image-editor-panel" @submit.prevent="saveEdit">
+        <header>
+          <div>
+            <span>EDIT</span>
+            <strong>编辑照片</strong>
+          </div>
+          <button class="icon-button viewer-action" type="button" title="关闭编辑" :disabled="editSaving" @click="closeEditor">
+            <X :size="19" />
+          </button>
+        </header>
+        <div class="image-editor-stage">
+          <div class="image-editor-canvas">
+            <img
+              :src="asset.previewUrl ?? asset.thumbnailUrl ?? ''"
+              :alt="displayTitle"
+              :style="{ transform: editTransform }"
+              draggable="false"
+            />
+            <span class="image-editor-crop" :style="editCropStyle"></span>
+          </div>
+        </div>
+        <div class="image-editor-tools" aria-label="编辑工具">
+          <button class="icon-button viewer-action" type="button" title="向左旋转" :disabled="editSaving" @click="rotateEditor(-90)">
+            <RotateCcw :size="19" />
+          </button>
+          <button class="icon-button viewer-action" type="button" title="向右旋转" :disabled="editSaving" @click="rotateEditor(90)">
+            <RotateCw :size="19" />
+          </button>
+          <button
+            class="icon-button viewer-action"
+            type="button"
+            :class="{ active: editFlipX }"
+            title="水平翻转"
+            :disabled="editSaving"
+            @click="editFlipX = !editFlipX"
+          >
+            <FlipHorizontal2 :size="19" />
+          </button>
+          <button
+            class="icon-button viewer-action"
+            type="button"
+            :class="{ active: editFlipY }"
+            title="垂直翻转"
+            :disabled="editSaving"
+            @click="editFlipY = !editFlipY"
+          >
+            <FlipVertical2 :size="19" />
+          </button>
+          <button class="button button-secondary" type="button" :disabled="editSaving" @click="resetEditorControls">
+            <Undo2 :size="17" />重置
+          </button>
+        </div>
+        <div class="image-editor-sliders">
+          <label>
+            <span>左侧</span>
+            <input type="range" min="0" max="0.95" step="0.01" :value="editCrop.x" :disabled="editSaving" @input="updateCropField('x', $event)" />
+            <output>{{ Math.round(editCrop.x * 100) }}%</output>
+          </label>
+          <label>
+            <span>顶部</span>
+            <input type="range" min="0" max="0.95" step="0.01" :value="editCrop.y" :disabled="editSaving" @input="updateCropField('y', $event)" />
+            <output>{{ Math.round(editCrop.y * 100) }}%</output>
+          </label>
+          <label>
+            <span>宽度</span>
+            <input type="range" min="0.05" max="1" step="0.01" :value="editCrop.width" :disabled="editSaving" @input="updateCropField('width', $event)" />
+            <output>{{ Math.round(editCrop.width * 100) }}%</output>
+          </label>
+          <label>
+            <span>高度</span>
+            <input type="range" min="0.05" max="1" step="0.01" :value="editCrop.height" :disabled="editSaving" @input="updateCropField('height', $event)" />
+            <output>{{ Math.round(editCrop.height * 100) }}%</output>
+          </label>
+        </div>
+        <p v-if="editError" class="viewer-info-error">{{ editError }}</p>
+        <footer>
+          <button class="button button-secondary" type="button" :disabled="editSaving" @click="closeEditor">取消</button>
+          <button class="button button-primary" type="submit" :disabled="editSaving">
+            <LoaderCircle v-if="editSaving" class="spin" :size="17" />
+            <Save v-else :size="17" />
+            保存编辑
+          </button>
+        </footer>
+      </form>
+    </div>
+
     <aside v-if="infoOpen" class="viewer-info-panel" aria-label="照片信息">
       <header>
         <div>
@@ -328,6 +537,7 @@ watch(() => asset.value?.id, () => {
         </div>
         <div><dt>类型</dt><dd>{{ typeLabel }}</dd></div>
         <div><dt>大小</dt><dd>{{ formatBytes(asset.sizeBytes) }}</dd></div>
+        <div><dt>编辑状态</dt><dd>{{ asset.edited ? '已编辑' : '原图' }}</dd></div>
         <div><dt>拍摄时间</dt><dd>{{ asset.shootingTime ? formatDate(asset.shootingTime) : '未读取' }}</dd></div>
         <div><dt>上传时间</dt><dd>{{ formatDate(asset.uploadedAt) }}</dd></div>
         <div><dt>上传者</dt><dd>{{ asset.ownerName }}</dd></div>
@@ -358,6 +568,26 @@ watch(() => asset.value?.id, () => {
         </button>
       </div>
       <div v-if="canManage" class="viewer-info-actions">
+        <button
+          v-if="canEdit"
+          class="button button-secondary"
+          type="button"
+          :disabled="saving || editSaving || isPrivacyHidden"
+          @click="openEditor"
+        >
+          <Crop :size="17" />
+          编辑照片
+        </button>
+        <button
+          v-if="asset.edited"
+          class="button button-secondary"
+          type="button"
+          :disabled="saving || editSaving"
+          @click="resetSavedEdit"
+        >
+          <Undo2 :size="17" />
+          恢复原图
+        </button>
         <button class="button button-secondary" type="button" :disabled="saving" @click="startTagEdit">
           <Tags :size="17" />
           设置标签
@@ -404,6 +634,7 @@ watch(() => asset.value?.id, () => {
       <span v-if="asset.favorite" class="single-copy">收藏</span>
       <span v-if="asset.deletedAt" class="single-copy">最近删除</span>
       <span v-if="asset.privacyMasked" class="single-copy">防窥</span>
+      <span v-if="asset.edited" class="single-copy">已编辑</span>
       <span class="single-copy">仅 1 个副本</span>
     </footer>
   </div>

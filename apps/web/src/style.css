@@ -1667,10 +1667,14 @@ input:focus-visible {
   position: fixed;
   inset: 0;
   z-index: 100;
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100dvh;
   display: grid;
   grid-template-rows: 64px minmax(0, 1fr) 46px;
   color: white;
   background: #111513;
+  box-sizing: border-box;
 }
 
 .viewer-toolbar {
@@ -1703,18 +1707,25 @@ input:focus-visible {
 .viewer-action.active { background: #2f3a34; border-color: #506058; }
 
 .viewer-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
   min-width: 0;
   min-height: 0;
   padding: 16px 76px;
   display: grid;
   place-items: center;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
-.viewer-stage img,
-.viewer-stage video {
+.viewer-media {
+  width: 100%;
+  height: 100%;
   max-width: 100%;
   max-height: 100%;
+  min-width: 0;
+  min-height: 0;
   display: block;
   object-fit: contain;
 }
@@ -2974,7 +2985,7 @@ input:focus-visible {
   }
 
   .viewer-stage {
-    padding: 8px;
+    padding: 8px 8px 56px;
   }
 
   .viewer-nav {

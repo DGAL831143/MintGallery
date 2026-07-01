@@ -65,6 +65,28 @@ describe('MediaViewer', () => {
     pause.mockRestore()
   })
 
+  it('renders ordinary images through the fit-to-screen media frame', () => {
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    const imageAsset: Asset = {
+      ...livePhoto,
+      id: 'image-1',
+      type: 'IMAGE',
+      liveOriginalUrl: null,
+      liveVideoUrl: null,
+      durationMs: null,
+    }
+    const wrapper = mount(MediaViewer, {
+      props: { assets: [imageAsset], index: 0, currentUser: { id: 'user-1', username: 'family', role: 'MEMBER', status: 'ACTIVE', mustChangePassword: false } },
+    })
+
+    const media = wrapper.find('img.viewer-media')
+    expect(media.exists()).toBe(true)
+    expect(media.attributes('src')).toBe(imageAsset.previewUrl)
+
+    wrapper.unmount()
+    pause.mockRestore()
+  })
+
   it('does not request the Live Photo video until playback is requested', async () => {
     const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
     const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)

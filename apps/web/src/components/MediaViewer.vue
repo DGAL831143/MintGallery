@@ -418,11 +418,19 @@ watch(() => asset.value?.id, () => {
       </div>
       <img
         v-else-if="asset.type === 'IMAGE' && asset.previewUrl"
+        class="viewer-media"
         :src="asset.previewUrl"
         :alt="displayTitle"
         draggable="false"
       />
-      <video v-else-if="asset.type === 'VIDEO'" :src="asset.originalUrl" controls playsinline preload="metadata"></video>
+      <video
+        v-else-if="asset.type === 'VIDEO'"
+        class="viewer-media"
+        :src="asset.originalUrl"
+        controls
+        playsinline
+        preload="metadata"
+      ></video>
       <div v-else class="viewer-fallback">
         <Film :size="42" />
         <strong>暂时无法生成预览</strong>

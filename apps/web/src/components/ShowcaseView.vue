@@ -35,6 +35,10 @@ const selectedIds = ref(new Set<string>())
 const viewerIndex = ref<number | null>(null)
 
 const canEdit = computed(() => props.user.role === 'ADMIN')
+type ShowcaseWallItem = {
+  key: string
+  asset: Asset
+}
 
 function mediaSource(asset: Asset): string | null {
   return asset.previewUrl ?? asset.thumbnailUrl ?? null
@@ -64,13 +68,28 @@ function mergeById(groups: Asset[][]): Asset[] {
 }
 
 const showcaseAssets = computed(() => assets.value.filter(isShowcaseCandidate))
-const primaryAsset = computed(() => showcaseAssets.value[0] ?? null)
 const selectedCount = computed(() => selectedIds.value.size)
-const showcaseColumns = computed(() => [
-  { id: 'left', className: 'showcase-column-left', items: showcaseAssets.value.filter((_, index) => index % 3 === 0) },
-  { id: 'center', className: 'showcase-column-center', items: showcaseAssets.value.filter((_, index) => index % 3 === 1) },
-  { id: 'right', className: 'showcase-column-right', items: showcaseAssets.value.filter((_, index) => index % 3 === 2) },
-])
+
+function buildShowcaseWallColumn(source: Asset[], start: number, count: number): ShowcaseWallItem[] {
+  return Array.from({ length: count }, (_, index) => {
+    const asset = source[(start + index) % source.length]!
+    return { key: `${asset.id}-${start}-${index}`, asset }
+  })
+}
+
+const showcaseWallLeftItems = computed(() => {
+  const source = showcaseAssets.value
+  if (source.length === 0) return []
+  const targetLength = source.length < 8 ? 8 : source.length
+  return buildShowcaseWallColumn(source, 0, Math.ceil(targetLength / 2))
+})
+const showcaseWallRightItems = computed(() => {
+  const source = showcaseAssets.value
+  if (source.length === 0) return []
+  const targetLength = source.length < 8 ? 8 : source.length
+  const start = source.length < targetLength && source.length > 1 ? 1 : Math.ceil(targetLength / 2)
+  return buildShowcaseWallColumn(source, start, Math.floor(targetLength / 2))
+})
 
 async function loadShowcase() {
   loading.value = true
@@ -215,39 +234,45 @@ onMounted(() => {
         <span>收藏家庭共享照片后会自动出现在这里。</span>
         <button v-if="canEdit" class="button button-primary" type="button" @click="openPicker"><Pencil :size="18" />选择图片</button>
       </section>
-      <template v-else>
-        <section class="showcase-hero">
-          <div class="showcase-hero-copy">
-            <span class="eyebrow">SHOWCASE</span>
-            <h1>MintGallery</h1>
-            <p>{{ defaulted ? '来自收藏的家庭影像' : '共用展示集' }}</p>
-          </div>
-          <button v-if="primaryAsset" class="showcase-hero-photo" type="button" @click="openAsset(primaryAsset)">
-            <img :src="mediaSource(primaryAsset) ?? ''" :alt="assetTitle(primaryAsset)" />
-          </button>
-        </section>
-
-        <section class="showcase-wall" aria-label="展示图片墙">
-          <div
-            v-for="column in showcaseColumns"
-            :key="column.id"
-            class="showcase-column"
-            :class="column.className"
+      <section v-else class="showcase-memory-stage" aria-label="展示图片墙">
+        <div class="showcase-wall-column showcase-wall-column-left">
+          <button
+            v-for="item in showcaseWallLeftItems"
+            :key="item.key"
+            class="showcase-photo"
+            type="button"
+            @click="openAsset(item.asset)"
           >
-            <button
-              v-for="asset in column.items"
-              :key="asset.id"
-              class="showcase-photo"
-              type="button"
-              @click="openAsset(asset)"
-            >
-              <img :src="mediaSource(asset) ?? ''" :alt="assetTitle(asset)" loading="lazy" />
-              <span v-if="asset.favorite" class="showcase-photo-badge"><Star :size="14" fill="currentColor" /></span>
-              <span v-if="asset.type === 'LIVE_PHOTO'" class="showcase-live-badge"><Sparkles :size="14" />LIVE</span>
-            </button>
-          </div>
-        </section>
-      </template>
+            <img :src="mediaSource(item.asset) ?? ''" :alt="assetTitle(item.asset)" loading="lazy" />
+            <span v-if="item.asset.favorite" class="showcase-photo-badge"><Star :size="14" fill="currentColor" /></span>
+            <span v-if="item.asset.type === 'LIVE_PHOTO'" class="showcase-live-badge"><Sparkles :size="14" />LIVE</span>
+          </button>
+        </div>
+
+        <div class="showcase-memory-panel">
+          <span class="eyebrow">SHOWCASE</span>
+          <h1>MintGallery</h1>
+          <small>{{ showcaseAssets.length }} 张展示图片</small>
+          <p>{{ defaulted ? '来自收藏的家庭影像' : '共用展示集' }}</p>
+          <button v-if="canEdit" class="button button-primary" type="button" @click="openPicker">
+            <Pencil :size="18" />编辑展示
+          </button>
+        </div>
+
+        <div class="showcase-wall-column showcase-wall-column-right">
+          <button
+            v-for="item in showcaseWallRightItems"
+            :key="item.key"
+            class="showcase-photo"
+            type="button"
+            @click="openAsset(item.asset)"
+          >
+            <img :src="mediaSource(item.asset) ?? ''" :alt="assetTitle(item.asset)" loading="lazy" />
+            <span v-if="item.asset.favorite" class="showcase-photo-badge"><Star :size="14" fill="currentColor" /></span>
+            <span v-if="item.asset.type === 'LIVE_PHOTO'" class="showcase-live-badge"><Sparkles :size="14" />LIVE</span>
+          </button>
+        </div>
+      </section>
     </main>
 
     <div v-if="pickerOpen" class="modal-backdrop showcase-picker-backdrop" role="dialog" aria-modal="true" aria-label="编辑展示图片">

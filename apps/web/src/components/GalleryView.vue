@@ -92,14 +92,6 @@ const collectionIcons: Record<FeaturedCollection['id'], Component> = {
   THIS_MONTH_HISTORY: Images,
 }
 
-type FeaturedWallItem = {
-  id: string
-  collectionId: FeaturedCollection['id']
-  title: string
-  thumbnailUrl: string
-  privacyMasked: boolean
-}
-
 const activeFolder = computed(() => folders.value.find((folder) => folder.id === activeFolderId.value) ?? null)
 const selectedCount = computed(() => selectedIds.value.size)
 const timelineGroups = computed(() => groupTimelineAssets(assets.value))
@@ -110,27 +102,6 @@ const activeTimelineMonth = computed(() =>
   ?? timelineScrubber.value.points[0]?.month
   ?? null,
 )
-const featuredCollectionMap = computed(() => new Map(featuredCollections.value.map((collection) => [collection.id, collection])))
-const featuredWallItems = computed<FeaturedWallItem[]>(() => {
-  const seen = new Set<string>()
-  const items: FeaturedWallItem[] = []
-  for (const collection of featuredCollections.value) {
-    for (const cover of collection.covers) {
-      if (!cover.thumbnailUrl || seen.has(cover.id)) continue
-      seen.add(cover.id)
-      items.push({
-        id: `${collection.id}-${cover.id}`,
-        collectionId: collection.id,
-        title: collection.title,
-        thumbnailUrl: cover.thumbnailUrl,
-        privacyMasked: cover.privacyMasked,
-      })
-    }
-  }
-  return items.slice(0, 18)
-})
-const featuredWallLeftItems = computed(() => featuredWallItems.value.filter((_, index) => index % 2 === 0))
-const featuredWallRightItems = computed(() => featuredWallItems.value.filter((_, index) => index % 2 === 1))
 const scopeTitle = computed(() => activeFolder.value?.name ?? (scope.value === 'SHARED' ? '家庭共享' : '仅自己可见'))
 const galleryTitle = computed(() => {
   if (viewMode.value === 'FEATURED') return '精选'
@@ -391,11 +362,6 @@ function openFeaturedCollection(collection: FeaturedCollection) {
   viewerIndex.value = null
   leaveSelection()
   void Promise.all([load(true), loadMonths()])
-}
-
-function openFeaturedWallItem(item: FeaturedWallItem) {
-  const collection = featuredCollectionMap.value.get(item.collectionId)
-  if (collection) openFeaturedCollection(collection)
 }
 
 function openFolderDialog() {
@@ -756,58 +722,7 @@ onMounted(() => {
               <button class="button button-secondary" @click="loadCollections">重新加载</button>
             </div>
             <div v-else>
-              <div v-if="featuredWallItems.length" class="featured-memory-stage">
-                <div class="featured-wall-column featured-wall-column-left">
-                  <button
-                    v-for="item in featuredWallLeftItems"
-                    :key="item.id"
-                    class="featured-wall-photo"
-                    :class="{ masked: item.privacyMasked }"
-                    :data-featured-wall-photo="item.collectionId"
-                    :aria-label="`打开${item.title}`"
-                    type="button"
-                    @click="openFeaturedWallItem(item)"
-                  >
-                    <img :src="item.thumbnailUrl" alt="" loading="lazy" />
-                  </button>
-                </div>
-
-                <div class="featured-memory-panel">
-                  <button
-                    v-for="collection in featuredCollections"
-                    :key="collection.id"
-                    class="featured-memory-entry"
-                    :class="{ empty: collection.count === 0 }"
-                    :data-featured-collection="collection.id"
-                    type="button"
-                    @click="openFeaturedCollection(collection)"
-                  >
-                    <span class="featured-memory-icon"><component :is="collectionIcons[collection.id]" :size="20" /></span>
-                    <span class="featured-memory-text">
-                      <strong>{{ collection.title }}</strong>
-                      <small>{{ collection.subtitle }}</small>
-                    </span>
-                    <em>{{ collection.count }}</em>
-                  </button>
-                </div>
-
-                <div class="featured-wall-column featured-wall-column-right">
-                  <button
-                    v-for="item in featuredWallRightItems"
-                    :key="item.id"
-                    class="featured-wall-photo"
-                    :class="{ masked: item.privacyMasked }"
-                    :data-featured-wall-photo="item.collectionId"
-                    :aria-label="`打开${item.title}`"
-                    type="button"
-                    @click="openFeaturedWallItem(item)"
-                  >
-                    <img :src="item.thumbnailUrl" alt="" loading="lazy" />
-                  </button>
-                </div>
-              </div>
-
-              <div v-else class="featured-grid">
+              <div class="featured-grid">
                 <button
                   v-for="collection in featuredCollections"
                   :key="collection.id"

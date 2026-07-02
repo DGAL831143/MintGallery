@@ -88,8 +88,9 @@ describe('ShowcaseView', () => {
     await flushPromises()
 
     expect(showcaseGetMock).toHaveBeenCalledTimes(1)
-    expect(wrapper.find('.showcase-hero').exists()).toBe(true)
-    expect(wrapper.findAll('.showcase-photo')).toHaveLength(1)
+    expect(wrapper.find('.showcase-memory-stage').exists()).toBe(true)
+    expect(wrapper.find('.showcase-memory-panel h1').text()).toBe('MintGallery')
+    expect(wrapper.findAll('.showcase-photo')).toHaveLength(8)
     expect(wrapper.text()).toContain('来自收藏的家庭影像')
   })
 

@@ -68,6 +68,10 @@ function mergeById(groups: Asset[][]): Asset[] {
 }
 
 const showcaseAssets = computed(() => assets.value.filter(isShowcaseCandidate))
+const primaryAsset = computed(() => showcaseAssets.value[0] ?? null)
+const showcaseWallAssets = computed(() =>
+  showcaseAssets.value.length > 1 ? showcaseAssets.value.slice(1) : showcaseAssets.value,
+)
 const selectedCount = computed(() => selectedIds.value.size)
 
 function buildShowcaseWallColumn(source: Asset[], start: number, count: number): ShowcaseWallItem[] {
@@ -78,13 +82,13 @@ function buildShowcaseWallColumn(source: Asset[], start: number, count: number):
 }
 
 const showcaseWallLeftItems = computed(() => {
-  const source = showcaseAssets.value
+  const source = showcaseWallAssets.value
   if (source.length === 0) return []
   const targetLength = source.length < 8 ? 8 : source.length
   return buildShowcaseWallColumn(source, 0, Math.ceil(targetLength / 2))
 })
 const showcaseWallRightItems = computed(() => {
-  const source = showcaseAssets.value
+  const source = showcaseWallAssets.value
   if (source.length === 0) return []
   const targetLength = source.length < 8 ? 8 : source.length
   const start = source.length < targetLength && source.length > 1 ? 1 : Math.ceil(targetLength / 2)
@@ -249,15 +253,23 @@ onMounted(() => {
           </button>
         </div>
 
-        <div class="showcase-memory-panel">
-          <span class="eyebrow">SHOWCASE</span>
-          <h1>MintGallery</h1>
-          <small>{{ showcaseAssets.length }} 张展示图片</small>
-          <p>{{ defaulted ? '来自收藏的家庭影像' : '共用展示集' }}</p>
-          <button v-if="canEdit" class="button button-primary" type="button" @click="openPicker">
-            <Pencil :size="18" />编辑展示
-          </button>
-        </div>
+        <button
+          v-if="primaryAsset"
+          class="showcase-feature-photo"
+          type="button"
+          @click="openAsset(primaryAsset)"
+        >
+          <img :src="mediaSource(primaryAsset) ?? ''" :alt="assetTitle(primaryAsset)" loading="eager" />
+          <span class="showcase-feature-eyebrow">SHOWCASE</span>
+          <span class="showcase-feature-caption">
+            <strong>{{ assetTitle(primaryAsset) }}</strong>
+            <small>{{ defaulted ? '来自收藏的家庭影像' : `共用展示集 / ${showcaseAssets.length} 张` }}</small>
+          </span>
+          <span class="showcase-feature-badges">
+            <span v-if="primaryAsset.favorite"><Star :size="14" fill="currentColor" /></span>
+            <span v-if="primaryAsset.type === 'LIVE_PHOTO'"><Sparkles :size="14" />LIVE</span>
+          </span>
+        </button>
 
         <div class="showcase-wall-column showcase-wall-column-right">
           <button

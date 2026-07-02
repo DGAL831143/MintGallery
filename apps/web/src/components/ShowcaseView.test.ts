@@ -89,7 +89,8 @@ describe('ShowcaseView', () => {
 
     expect(showcaseGetMock).toHaveBeenCalledTimes(1)
     expect(wrapper.find('.showcase-memory-stage').exists()).toBe(true)
-    expect(wrapper.find('.showcase-memory-panel h1').text()).toBe('MintGallery')
+    expect(wrapper.find('.showcase-feature-photo').exists()).toBe(true)
+    expect(wrapper.find('.showcase-feature-photo img').attributes('src')).toBe('/api/media/favorite-a-preview')
     expect(wrapper.findAll('.showcase-photo')).toHaveLength(8)
     expect(wrapper.text()).toContain('来自收藏的家庭影像')
   })

@@ -505,53 +505,122 @@ input:focus-visible {
   padding-top: 86px;
 }
 
-.showcase-memory-panel {
+.showcase-feature-photo {
   min-width: 0;
-  min-height: calc(100vh - 136px);
+  width: 100%;
+  height: calc(100vh - 136px);
+  min-height: 520px;
+  max-height: 760px;
   position: sticky;
   top: 82px;
-  display: grid;
-  align-content: center;
-  justify-items: start;
-  gap: 10px;
-  padding: 0 6px;
+  padding: 0;
+  overflow: hidden;
+  color: white;
+  background: #dfe7e2;
+  border: 0;
+  border-radius: 8px;
+  box-shadow: 0 18px 44px rgba(25, 45, 34, 0.16);
+  cursor: zoom-in;
+  text-align: left;
 }
 
-.showcase-memory-panel h1 {
-  margin: 0;
-  max-width: 100%;
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 4.2rem;
-  line-height: 0.98;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.showcase-memory-panel p,
-.showcase-memory-panel small {
-  margin: 0;
-  color: var(--muted);
-  font-weight: 750;
-}
-
-.showcase-memory-panel p {
-  font-size: 1rem;
-}
-
-.showcase-memory-panel small {
-  font-size: 0.82rem;
-}
-
-.showcase-memory-panel .button {
-  margin-top: 8px;
-}
-
+.showcase-feature-photo img,
 .showcase-photo img,
 .showcase-picker-item img {
   width: 100%;
   height: 100%;
   display: block;
   object-fit: cover;
+}
+
+.showcase-feature-photo img {
+  transition: transform 260ms ease;
+}
+
+.showcase-feature-photo:hover img {
+  transform: scale(1.025);
+}
+
+.showcase-feature-photo::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(to bottom, rgba(12, 21, 16, 0.38), transparent 30%),
+    linear-gradient(to top, rgba(12, 21, 16, 0.52), transparent 46%);
+}
+
+.showcase-feature-eyebrow,
+.showcase-feature-caption,
+.showcase-feature-badges {
+  position: absolute;
+  z-index: 2;
+}
+
+.showcase-feature-eyebrow {
+  top: 14px;
+  left: 14px;
+  min-height: 28px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  color: white;
+  background: rgba(20, 28, 23, 0.68);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 5px;
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.showcase-feature-caption {
+  right: 14px;
+  bottom: 14px;
+  left: 14px;
+  display: grid;
+  gap: 4px;
+}
+
+.showcase-feature-caption strong,
+.showcase-feature-caption small {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.showcase-feature-caption strong {
+  font-size: 1.02rem;
+  line-height: 1.15;
+}
+
+.showcase-feature-caption small {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.showcase-feature-badges {
+  top: 14px;
+  right: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.showcase-feature-badges span {
+  min-height: 28px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: white;
+  background: rgba(20, 28, 23, 0.68);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 5px;
+  font-size: 0.68rem;
+  font-weight: 900;
 }
 
 .showcase-photo {
@@ -2947,8 +3016,8 @@ input:focus-visible {
     grid-template-columns: minmax(0, 0.9fr) minmax(320px, 0.82fr) minmax(0, 0.9fr);
   }
 
-  .showcase-memory-panel h1 {
-    font-size: 3.45rem;
+  .showcase-feature-photo {
+    min-height: 480px;
   }
 }
 
@@ -2966,16 +3035,13 @@ input:focus-visible {
     animation: none;
   }
 
-  .showcase-memory-panel {
+  .showcase-feature-photo {
+    height: auto;
     min-height: auto;
     position: relative;
     top: auto;
     order: -1;
-    padding: 8px 2px 14px;
-  }
-
-  .showcase-memory-panel h1 {
-    font-size: 3.2rem;
+    aspect-ratio: 4 / 5;
   }
 
   .showcase-photo,
@@ -3058,16 +3124,30 @@ input:focus-visible {
     padding: 18px 10px 60px;
   }
 
-  .showcase-memory-panel h1 {
-    font-size: 2.65rem;
+  .showcase-feature-eyebrow {
+    top: 10px;
+    left: 10px;
+    min-height: 26px;
+    padding: 0 8px;
   }
 
-  .showcase-memory-panel p {
+  .showcase-feature-caption {
+    right: 10px;
+    bottom: 10px;
+    left: 10px;
+  }
+
+  .showcase-feature-caption strong {
     font-size: 0.92rem;
   }
 
-  .showcase-memory-panel .button {
-    width: 100%;
+  .showcase-feature-caption small {
+    font-size: 0.72rem;
+  }
+
+  .showcase-feature-badges {
+    top: 10px;
+    right: 10px;
   }
 
   .showcase-picker-backdrop {

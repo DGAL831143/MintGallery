@@ -90,6 +90,13 @@ export function openDatabase(databasePath: string): DatabaseSync {
       PRIMARY KEY(folder_id, asset_id)
     );
 
+    CREATE TABLE IF NOT EXISTS showcase_items (
+      asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL UNIQUE,
+      added_at INTEGER NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
     CREATE INDEX IF NOT EXISTS idx_assets_feed ON assets(uploaded_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_assets_owner ON assets(owner_id, uploaded_at DESC);
@@ -99,6 +106,7 @@ export function openDatabase(databasePath: string): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_asset_edits_asset_active ON asset_edits(asset_id, active, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_folders_owner ON folders(owner_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_folder_assets_asset ON folder_assets(asset_id);
+    CREATE INDEX IF NOT EXISTS idx_showcase_items_position ON showcase_items(position);
   `)
 
   const requiredAssetFileKinds = ['LIVE_PREVIEW', 'EDIT_THUMBNAIL', 'EDIT_PREVIEW']

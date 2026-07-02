@@ -120,6 +120,8 @@ type SmartFilter =
   | 'TODAY_IN_HISTORY'
   | 'THIS_MONTH_HISTORY'
 
+const SHOWCASE_ASSET_LIMIT = 13
+
 interface FeaturedCollectionDefinition {
   id: 'TODAY_IN_HISTORY' | 'THIS_MONTH_HISTORY'
   title: string
@@ -325,6 +327,22 @@ function cleanAssetIds(value: unknown, max = 100): string[] {
   return [...new Set(value.filter((id): id is string => typeof id === 'string' && id.length > 0))].slice(0, max)
 }
 
+function normalizeShowcaseAssetIds(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null
+  const seen = new Set<string>()
+  const assetIds: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string') return null
+    const id = item.trim()
+    if (!id) return null
+    if (seen.has(id)) continue
+    seen.add(id)
+    assetIds.push(id)
+    if (assetIds.length > SHOWCASE_ASSET_LIMIT) return null
+  }
+  return assetIds
+}
+
 function recordBody(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -526,7 +544,55 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get('/api/health', async () => ({ ok: true, version: '1.2.0' }))
+  const showcaseAssetCondition = `
+    a.visibility = 'SHARED'
+    AND a.deleted_at IS NULL
+    AND a.status = 'READY'
+    AND a.privacy_masked = 0
+    AND a.type IN ('IMAGE', 'LIVE_PHOTO')
+  `
+
+  const loadShowcasePayload = () => {
+    const configuredRows = database.prepare(`
+      SELECT a.*, COALESCE(a.shooting_time, a.uploaded_at) AS sort_time,
+        u.username AS owner_name,
+        ${assetFileColumns}
+      FROM showcase_items si
+      JOIN assets a ON a.id = si.asset_id
+      JOIN users u ON u.id = a.owner_id
+      WHERE ${showcaseAssetCondition}
+      ORDER BY si.position ASC
+      LIMIT ?
+    `).all(SHOWCASE_ASSET_LIMIT) as unknown as AssetRow[]
+
+    if (configuredRows.length > 0) {
+      return {
+        assets: configuredRows.map(serializeAsset),
+        configuredAssetIds: configuredRows.map((row) => row.id),
+        defaulted: false,
+      }
+    }
+
+    const favoriteRows = database.prepare(`
+      SELECT a.*, COALESCE(a.shooting_time, a.uploaded_at) AS sort_time,
+        u.username AS owner_name,
+        ${assetFileColumns}
+      FROM assets a
+      JOIN users u ON u.id = a.owner_id
+      WHERE ${showcaseAssetCondition}
+        AND a.favorite = 1
+      ORDER BY sort_time DESC, a.id DESC
+      LIMIT ?
+    `).all(SHOWCASE_ASSET_LIMIT) as unknown as AssetRow[]
+
+    return {
+      assets: favoriteRows.map(serializeAsset),
+      configuredAssetIds: [],
+      defaulted: true,
+    }
+  }
+
+  app.get('/api/health', async () => ({ ok: true, version: '1.3.0' }))
 
   app.get('/api/bootstrap/status', async () => {
     const row = database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }
@@ -1234,6 +1300,55 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       ORDER BY sort_time DESC, a.id DESC
     `).all(...assetIds) as unknown as AssetRow[]
     return { assets: updatedRows.map(serializeAsset) }
+  })
+
+  app.get('/api/showcase', { preHandler: requireUser }, async () => loadShowcasePayload())
+
+  app.put('/api/showcase', { preHandler: requireAdmin }, async (request, reply) => {
+    const body = recordBody(request.body)
+    const assetIds = normalizeShowcaseAssetIds(body?.assetIds)
+    if (!assetIds) {
+      return reply.code(400).send({ message: '展示页图片列表无效' })
+    }
+
+    if (assetIds.length > 0) {
+      const placeholders = assetIds.map(() => '?').join(', ')
+      const rows = database.prepare(`
+        SELECT a.id
+        FROM assets a
+        WHERE a.id IN (${placeholders})
+          AND ${showcaseAssetCondition}
+      `).all(...assetIds) as Array<{ id: string }>
+      const validIds = new Set(rows.map((row) => row.id))
+      if (assetIds.some((assetId) => !validIds.has(assetId))) {
+        return reply.code(400).send({
+          message: '展示页只能选择家庭共享、非防窥、已处理完成的图片或实况照片',
+        })
+      }
+    }
+
+    const now = Date.now()
+    database.exec('BEGIN')
+    try {
+      database.prepare('DELETE FROM showcase_items').run()
+      const insert = database.prepare(`
+        INSERT INTO showcase_items (asset_id, position, added_at, updated_by)
+        VALUES (?, ?, ?, ?)
+      `)
+      for (const [position, assetId] of assetIds.entries()) {
+        insert.run(assetId, position, now, request.currentUser!.id)
+      }
+      database.exec('COMMIT')
+    } catch (error) {
+      try {
+        database.exec('ROLLBACK')
+      } catch {
+        // Preserve the original SQLite error if the transaction already ended.
+      }
+      throw error
+    }
+
+    return loadShowcasePayload()
   })
 
   app.get('/api/collections', { preHandler: requireUser }, async (request, reply) => {

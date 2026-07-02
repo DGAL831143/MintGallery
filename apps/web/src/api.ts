@@ -7,6 +7,7 @@ import type {
   ImportRunResult,
   ImportScanResult,
   MediaTypeFilter,
+  ShowcaseResponse,
   SmartFilter,
   StorageSummary,
   TimelineMonth,
@@ -75,8 +76,9 @@ export const galleryApi = {
     filter: GalleryFilter = 'ALL',
     mediaType: MediaTypeFilter = 'ALL',
     smartFilter: SmartFilter = 'ALL',
+    limit = 30,
   ) => {
-    const search = new URLSearchParams({ scope, limit: '30' })
+    const search = new URLSearchParams({ scope, limit: String(limit) })
     if (cursor) search.set('cursor', cursor)
     if (folderId) search.set('folderId', folderId)
     if (month) search.set('month', month)
@@ -145,6 +147,14 @@ export const collectionApi = {
     const search = new URLSearchParams({ scope })
     return api<{ collections: FeaturedCollection[] }>(`/api/collections?${search}`)
   },
+}
+
+export const showcaseApi = {
+  get: () => api<ShowcaseResponse>('/api/showcase'),
+  update: (assetIds: string[]) => api<ShowcaseResponse>('/api/showcase', {
+    method: 'PUT',
+    body: JSON.stringify({ assetIds }),
+  }),
 }
 
 export const folderApi = {

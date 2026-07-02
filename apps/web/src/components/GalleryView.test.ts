@@ -7,6 +7,8 @@ const listMock = vi.hoisted(() => vi.fn())
 const collectionsMock = vi.hoisted(() => vi.fn())
 const foldersMock = vi.hoisted(() => vi.fn())
 const monthsMock = vi.hoisted(() => vi.fn())
+const showcaseGetMock = vi.hoisted(() => vi.fn())
+const showcaseUpdateMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../api', () => ({
   adminApi: {
@@ -34,6 +36,10 @@ vi.mock('../api', () => ({
     list: listMock,
     updateAsset: vi.fn(),
     updateAssets: vi.fn(),
+  },
+  showcaseApi: {
+    get: showcaseGetMock,
+    update: showcaseUpdateMock,
   },
   timelineApi: {
     months: monthsMock,
@@ -117,6 +123,9 @@ function mountGallery() {
           template: '<div class="media-tile" :data-id="asset.id">{{ asset.id }}</div>',
         },
         MediaViewer: true,
+        ShowcaseView: {
+          template: '<section class="showcase-shell">showcase</section>',
+        },
         UploadPanel: true,
       },
     },
@@ -133,9 +142,26 @@ describe('GalleryView filters', () => {
     collectionsMock.mockReset()
     foldersMock.mockReset()
     monthsMock.mockReset()
+    showcaseGetMock.mockReset()
+    showcaseUpdateMock.mockReset()
     collectionsMock.mockResolvedValue({ collections: [] })
     foldersMock.mockResolvedValue({ folders: [] })
     monthsMock.mockResolvedValue({ months: [] })
+  })
+
+  it('opens the shared showcase from the MintGallery brand entry', async () => {
+    listMock.mockResolvedValue({ assets: [asset('visible-asset')], nextCursor: null })
+
+    const wrapper = mountGallery()
+    await flushPromises()
+
+    expect(wrapper.find('.showcase-shell').exists()).toBe(false)
+
+    await wrapper.find('.brand-button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.showcase-shell').exists()).toBe(true)
+    expect(wrapper.find('.app-shell').exists()).toBe(false)
   })
 
   it('renders memory featured collections as a rotating wall and opens one as a filtered grid', async () => {

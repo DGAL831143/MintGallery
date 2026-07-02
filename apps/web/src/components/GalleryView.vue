@@ -48,6 +48,7 @@ import AdminPanel from './AdminPanel.vue'
 import FolderDialog from './FolderDialog.vue'
 import MediaTile from './MediaTile.vue'
 import MediaViewer from './MediaViewer.vue'
+import ShowcaseView from './ShowcaseView.vue'
 import UploadPanel from './UploadPanel.vue'
 
 const props = defineProps<{ user: User }>()
@@ -74,6 +75,7 @@ const error = ref('')
 const collectionsError = ref('')
 const viewerIndex = ref<number | null>(null)
 const adminOpen = ref(false)
+const showcaseOpen = ref(false)
 const selectionMode = ref(false)
 const selectedIds = ref(new Set<string>())
 const folderDialogOpen = ref(false)
@@ -589,12 +591,13 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="app-shell">
+  <ShowcaseView v-if="showcaseOpen" :user="user" @close="showcaseOpen = false" />
+  <div v-else class="app-shell">
     <header class="topbar">
-      <div class="brand-lockup">
+      <button class="brand-lockup brand-button" type="button" aria-label="打开展示页" @click="showcaseOpen = true">
         <div class="brand-mark"><Leaf :size="21" /></div>
         <strong>MintGallery</strong>
-      </div>
+      </button>
 
       <div class="topbar-actions">
         <UploadPanel :owner-id="user.id" @uploaded="receiveAsset" />

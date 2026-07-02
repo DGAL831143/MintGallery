@@ -79,6 +79,12 @@ export interface FeaturedCollection {
   covers: Asset[]
 }
 
+export interface ShowcaseResponse {
+  assets: Asset[]
+  configuredAssetIds: string[]
+  defaulted: boolean
+}
+
 export interface Folder {
   id: string
   name: string

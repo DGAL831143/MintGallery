@@ -133,6 +133,112 @@ describe('MintGallery API', () => {
     expect(cachedThumbnail.statusCode).toBe(304)
   })
 
+  it('serves a shared showcase from favorites and restricts global edits to valid assets', async () => {
+    const bootstrap = await app.inject({
+      method: 'POST',
+      url: '/api/bootstrap',
+      payload: { username: 'owner', password: 'strong-password' },
+    })
+    const ownerCookie = bootstrap.headers['set-cookie']?.split(';')[0]
+    await app.inject({
+      method: 'POST',
+      url: '/api/users',
+      headers: { cookie: ownerCookie },
+      payload: { username: 'family', temporaryPassword: 'temporary-password' },
+    })
+    const memberLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'family', password: 'temporary-password' },
+    })
+    const memberCookie = memberLogin.headers['set-cookie']?.split(';')[0]
+
+    const uploadSharedImage = async (filename: string, color: string) => {
+      const boundary = `----mintgallery-showcase-${filename}`
+      const image = await sharp({
+        create: { width: 12, height: 10, channels: 3, background: color },
+      }).png().toBuffer()
+      const payload = Buffer.concat([
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`,
+        ),
+        image,
+        Buffer.from(`\r\n--${boundary}--\r\n`),
+      ])
+      return app.inject({
+        method: 'POST',
+        url: '/api/assets?visibility=SHARED',
+        headers: { cookie: ownerCookie, 'content-type': `multipart/form-data; boundary=${boundary}` },
+        payload,
+      })
+    }
+
+    const visibleUpload = await uploadSharedImage('visible.png', '#52b788')
+    const maskedUpload = await uploadSharedImage('masked.png', '#2d6a4f')
+    const visibleAsset = visibleUpload.json().asset
+    const maskedAsset = maskedUpload.json().asset
+
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/assets/${visibleAsset.id}`,
+      headers: { cookie: ownerCookie },
+      payload: { favorite: true },
+    })
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/assets/${maskedAsset.id}`,
+      headers: { cookie: ownerCookie },
+      payload: { favorite: true, privacyMasked: true },
+    })
+
+    const defaultShowcase = await app.inject({
+      method: 'GET',
+      url: '/api/showcase',
+      headers: { cookie: memberCookie },
+    })
+    expect(defaultShowcase.statusCode).toBe(200)
+    expect(defaultShowcase.json()).toMatchObject({
+      defaulted: true,
+      configuredAssetIds: [],
+    })
+    expect(defaultShowcase.json().assets.map((asset: { id: string }) => asset.id)).toEqual([visibleAsset.id])
+
+    const memberEdit = await app.inject({
+      method: 'PUT',
+      url: '/api/showcase',
+      headers: { cookie: memberCookie },
+      payload: { assetIds: [visibleAsset.id] },
+    })
+    expect(memberEdit.statusCode).toBe(403)
+
+    const invalidEdit = await app.inject({
+      method: 'PUT',
+      url: '/api/showcase',
+      headers: { cookie: ownerCookie },
+      payload: { assetIds: [maskedAsset.id] },
+    })
+    expect(invalidEdit.statusCode).toBe(400)
+
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/api/showcase',
+      headers: { cookie: ownerCookie },
+      payload: { assetIds: [visibleAsset.id] },
+    })
+    expect(saved.statusCode).toBe(200)
+    expect(saved.json()).toMatchObject({
+      defaulted: false,
+      configuredAssetIds: [visibleAsset.id],
+    })
+
+    const configuredShowcase = await app.inject({
+      method: 'GET',
+      url: '/api/showcase',
+      headers: { cookie: memberCookie },
+    })
+    expect(configuredShowcase.json().assets.map((asset: { id: string }) => asset.id)).toEqual([visibleAsset.id])
+  })
+
   it('saves non-destructive image edits and restores the original derivatives', async () => {
     const bootstrap = await app.inject({
       method: 'POST',
